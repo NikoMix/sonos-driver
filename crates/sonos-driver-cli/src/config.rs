@@ -51,6 +51,15 @@ pub(crate) fn apply_stream_overrides(mut config: Config, args: &StreamArgs) -> C
     if let Some(device) = &args.device {
         config.capture.device = Some(device.clone());
     }
+    if let Some(process) = &args.process {
+        config.capture.process = Some(process.clone());
+    }
+    // `--exclude-process` is a presence flag: setting it forces exclude mode. A
+    // file value of `true` therefore cannot be overridden back to `false` from
+    // the command line, matching clap's conventional boolean-flag semantics.
+    if args.exclude_process {
+        config.capture.exclude_process = true;
+    }
     if let Some(port) = args.port {
         config.stream.port = port;
     }
@@ -101,6 +110,15 @@ pub(crate) fn validate(config: &Config, require_target: bool) -> anyhow::Result<
             bail!("pipeline.target-sample-rate {rate} Hz is outside the supported 8000..=384000 Hz range");
         }
     }
+    match config.capture.process.as_deref().map(str::trim) {
+        Some("") => bail!(
+            "capture.process must not be blank; remove it to capture the default render device"
+        ),
+        None if config.capture.exclude_process => bail!(
+            "capture.exclude-process requires capture.process to be set (pass --process <name|pid>, or drop --exclude-process)"
+        ),
+        _ => {}
+    }
     if require_target && !has_target(config) {
         bail!(
             "a streaming target is required: pass --room or --uuid (or set sonos.room / sonos.uuid in the config file)"
@@ -128,6 +146,14 @@ const EXAMPLE_TOML: &str = r#"# sonos-driver configuration.
 # Windows audio endpoint to capture: a device id or a substring of the friendly
 # name. Leave unset to follow the current default render (playback) device.
 # device = "Speakers"
+# Capture a single application's audio via WASAPI process loopback instead of
+# the whole endpoint: a process name ("spotify.exe", the .exe is optional) or a
+# numeric PID. Takes precedence over `device`. Requires Windows 11 / Windows
+# Server 2022 (build 20348+). Leave unset for the classic default-device path.
+# process = "spotify.exe"
+# Invert `process`: capture everything EXCEPT the target application's audio
+# tree. Ignored unless `process` is set.
+# exclude-process = false
 
 [pipeline]
 # Resample captured audio to this rate (Hz) before encoding. Sonos commonly
@@ -173,6 +199,8 @@ mod tests {
             uuid: None,
             profile: None,
             device: None,
+            process: None,
+            exclude_process: false,
             port: None,
             bind_address: None,
             target_sample_rate: None,
@@ -271,6 +299,70 @@ mod tests {
         args.target_sample_rate = Some(0);
         let cfg = apply_stream_overrides(Config::default(), &args);
         assert_eq!(cfg.pipeline.target_sample_rate, None);
+    }
+
+    #[test]
+    fn process_flags_override_file() {
+        let file = TempToml::new(
+            r#"
+            [capture]
+            device = "Speakers"
+            [sonos]
+            room = "Office"
+            "#,
+        );
+        let mut args = empty_stream_args();
+        args.process = Some("spotify.exe".to_owned());
+        args.exclude_process = true;
+
+        let cfg = effective_stream_config(Some(file.path()), &args).expect("merge");
+        // The process flag layers on top of the file...
+        assert_eq!(cfg.capture.process.as_deref(), Some("spotify.exe"));
+        assert!(cfg.capture.exclude_process);
+        // ...while the file-provided device is preserved (runtime precedence —
+        // process over device — is applied later, inside the capture layer).
+        assert_eq!(cfg.capture.device.as_deref(), Some("Speakers"));
+    }
+
+    #[test]
+    fn exclude_process_file_value_survives_without_flag() {
+        let file = TempToml::new(
+            r#"
+            [capture]
+            process = "1234"
+            exclude-process = true
+            "#,
+        );
+        let cfg = effective_stream_config(Some(file.path()), &empty_stream_args()).expect("load");
+        assert_eq!(cfg.capture.process.as_deref(), Some("1234"));
+        assert!(cfg.capture.exclude_process);
+    }
+
+    #[test]
+    fn validate_rejects_exclude_without_process() {
+        let mut cfg = Config::default();
+        cfg.sonos.room = Some("Living Room".to_owned());
+        cfg.capture.exclude_process = true;
+        let err = validate(&cfg, true).expect_err("exclude without process");
+        assert!(err.to_string().contains("exclude-process"));
+    }
+
+    #[test]
+    fn validate_rejects_blank_process() {
+        let mut cfg = Config::default();
+        cfg.sonos.room = Some("Living Room".to_owned());
+        cfg.capture.process = Some("   ".to_owned());
+        let err = validate(&cfg, true).expect_err("blank process");
+        assert!(err.to_string().contains("capture.process"));
+    }
+
+    #[test]
+    fn validate_accepts_process_with_exclude() {
+        let mut cfg = Config::default();
+        cfg.sonos.room = Some("Living Room".to_owned());
+        cfg.capture.process = Some("spotify.exe".to_owned());
+        cfg.capture.exclude_process = true;
+        assert!(validate(&cfg, true).is_ok());
     }
 
     #[test]

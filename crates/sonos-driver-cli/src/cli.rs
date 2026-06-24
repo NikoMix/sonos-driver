@@ -77,6 +77,16 @@ pub(crate) struct StreamArgs {
     /// Capture device id or friendly-name substring (default: system default render device).
     #[arg(long)]
     pub(crate) device: Option<String>,
+    /// Capture a single application's audio via WASAPI process loopback: a
+    /// process name (e.g. "spotify.exe", the `.exe` is optional) or a numeric
+    /// PID. Takes precedence over `--device`. Requires Windows 11 / Windows
+    /// Server 2022 (build 20348+).
+    #[arg(long, value_name = "NAME|PID")]
+    pub(crate) process: Option<String>,
+    /// Invert `--process`: capture everything *except* the target application's
+    /// audio tree. Has no effect unless `--process` is set.
+    #[arg(long)]
+    pub(crate) exclude_process: bool,
     /// TCP port for the local stream server.
     #[arg(long)]
     pub(crate) port: Option<u16>,
@@ -196,6 +206,8 @@ mod tests {
         assert!(args.buffer_ms.is_none());
         assert!(args.discovery_timeout.is_none());
         assert!(args.device.is_none());
+        assert!(args.process.is_none());
+        assert!(!args.exclude_process);
         assert!(!args.dry_run);
     }
 
@@ -210,6 +222,9 @@ mod tests {
             "flac",
             "--device",
             "Speakers",
+            "--process",
+            "Spotify",
+            "--exclude-process",
             "--port",
             "9000",
             "--bind-address",
@@ -228,6 +243,8 @@ mod tests {
         assert_eq!(args.uuid.as_deref(), Some("RINCON_X"));
         assert_eq!(args.profile, Some(ProfileArg::Flac));
         assert_eq!(args.device.as_deref(), Some("Speakers"));
+        assert_eq!(args.process.as_deref(), Some("Spotify"));
+        assert!(args.exclude_process);
         assert_eq!(args.port, Some(9000));
         assert_eq!(args.bind_address.as_deref(), Some("127.0.0.1"));
         assert_eq!(args.target_sample_rate, Some(48_000));

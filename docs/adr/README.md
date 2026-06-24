@@ -18,6 +18,7 @@ supersedes the old one (and update the old one's status to "Superseded by ADR-N"
 - [0008 — CLI configuration precedence, graceful stop, and control commands](./0008-cli-config-and-signals.md)
 - [0009 — Dependency upgrade policy and the rubato/audioadapter version pin](./0009-dependency-upgrade-policy.md)
 - [0010 — Portable release packaging via a PowerShell script (no extra crate or xtask)](./0010-portable-release-packaging.md)
+- [0011 — Per-application capture via WASAPI process loopback](./0011-process-loopback-capture.md)
 
 ## Template
 

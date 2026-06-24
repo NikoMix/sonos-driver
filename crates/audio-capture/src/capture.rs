@@ -101,23 +101,37 @@ pub struct LoopbackCapture {
 }
 
 impl LoopbackCapture {
-    /// Open a loopback capture session for the endpoint selected by `config`.
+    /// Open a loopback capture session for the target selected by `config`.
     ///
-    /// The endpoint is chosen from [`CaptureConfig::device`] (an endpoint id or a
-    /// friendly-name substring), falling back to the current default render
-    /// device when it is `None`. Capture runs event-driven on a dedicated
-    /// time-critical thread, and a silence keep-alive renderer keeps the engine
-    /// active so frames keep flowing even while the system is otherwise idle.
+    /// When [`CaptureConfig::process`] is set (a process id or image name),
+    /// per-application *process loopback* is used: audio is captured from — or,
+    /// when [`CaptureConfig::exclude_process`] is set, excluded for — that single
+    /// process tree. Process selection takes precedence over
+    /// [`CaptureConfig::device`], and requires Windows 11 / Server 2022 (build
+    /// 20348+).
+    ///
+    /// Otherwise the default **device** loopback is used: the endpoint is chosen
+    /// from [`CaptureConfig::device`] (an endpoint id or a friendly-name
+    /// substring), falling back to the current default render device when it is
+    /// `None`. Capture runs event-driven on a dedicated time-critical thread, and
+    /// a silence keep-alive renderer keeps the engine active so frames keep
+    /// flowing even while the system is otherwise idle.
     ///
     /// # Errors
     ///
-    /// Returns [`audio_core::Error::Capture`] when the requested device cannot be
-    /// found or the WASAPI client cannot be initialised, and
-    /// [`audio_core::Error::InvalidFormat`] when the endpoint mix format cannot be
-    /// converted to canonical `f32`. On non-Windows targets it always returns an
-    /// [`audio_core::Error::Capture`] explaining the platform requirement.
+    /// Returns [`audio_core::Error::Capture`] when the requested device or process
+    /// cannot be found, the host OS is too old for process loopback, or the WASAPI
+    /// client cannot be initialised, and [`audio_core::Error::InvalidFormat`] when
+    /// the endpoint mix format cannot be converted to canonical `f32`. On
+    /// non-Windows targets it always returns an [`audio_core::Error::Capture`]
+    /// explaining the platform requirement.
     pub fn open(config: &CaptureConfig) -> Result<Self> {
-        Self::open_impl(config.device.as_deref())
+        match config.process.as_deref().map(str::trim) {
+            Some(target) if !target.is_empty() => {
+                Self::open_process_impl(target, config.exclude_process)
+            }
+            _ => Self::open_impl(config.device.as_deref()),
+        }
     }
 
     #[cfg(windows)]
@@ -129,6 +143,18 @@ impl LoopbackCapture {
     fn open_impl(_selector: Option<&str>) -> Result<Self> {
         Err(audio_core::Error::capture(
             "WASAPI loopback capture is only available on Windows",
+        ))
+    }
+
+    #[cfg(windows)]
+    fn open_process_impl(target: &str, exclude: bool) -> Result<Self> {
+        crate::wasapi::open_process_capture(target, exclude)
+    }
+
+    #[cfg(not(windows))]
+    fn open_process_impl(_target: &str, _exclude: bool) -> Result<Self> {
+        Err(audio_core::Error::capture(
+            "per-application WASAPI process-loopback capture is only available on Windows",
         ))
     }
 

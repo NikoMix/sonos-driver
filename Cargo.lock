@@ -80,6 +80,7 @@ dependencies = [
  "audio-core 0.1.0",
  "tracing",
  "windows",
+ "windows-core",
 ]
 
 [[package]]

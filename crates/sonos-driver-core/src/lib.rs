@@ -216,7 +216,40 @@ impl Bridge {
 
 /// Open the platform capture source for the configured device.
 fn open_capture(config: &CaptureConfig) -> Result<Box<dyn AudioSource>> {
+    log_capture_mode(config);
     Ok(Box::new(audio_capture::LoopbackCapture::open(config)?))
+}
+
+/// Emit a one-line summary of which capture path the configuration selects so
+/// operators can confirm process-loopback vs default-device capture at a glance.
+///
+/// This mirrors the precedence applied inside
+/// [`audio_capture::LoopbackCapture::open`]: a non-blank `capture.process`
+/// selects per-application loopback (include or exclude depending on
+/// `exclude_process`); otherwise the classic default-device loopback runs.
+fn log_capture_mode(config: &CaptureConfig) {
+    let process = config
+        .process
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty());
+    match process {
+        Some(app) if config.exclude_process => tracing::info!(
+            process = app,
+            mode = "process-loopback-exclude",
+            "capturing the default endpoint while excluding one application's audio tree"
+        ),
+        Some(app) => tracing::info!(
+            process = app,
+            mode = "process-loopback-include",
+            "capturing a single application's audio tree via WASAPI process loopback"
+        ),
+        None => tracing::info!(
+            device = config.device.as_deref().unwrap_or("<default>"),
+            mode = "default-device",
+            "capturing a render endpoint via default-device loopback"
+        ),
+    }
 }
 
 #[cfg(test)]

@@ -33,6 +33,16 @@ pub struct CaptureConfig {
     /// Endpoint to capture. `None` selects the current default render device.
     /// May be a device id or a substring of the friendly name.
     pub device: Option<String>,
+    /// Per-application capture target: a process name (e.g. `"spotify.exe"`,
+    /// `.exe` optional) or a numeric PID. When set, the bridge captures that
+    /// application's audio via WASAPI process loopback instead of the whole
+    /// render endpoint (requires Windows 11 / Server 2022, build 20348+).
+    /// `None` (the default) preserves the classic default-device loopback.
+    pub process: Option<String>,
+    /// Invert [`CaptureConfig::process`]: capture *everything except* the
+    /// target application's audio (process-tree exclude). Ignored unless
+    /// `process` is set. Defaults to `false` (capture only the target app).
+    pub exclude_process: bool,
 }
 
 /// Pipeline behaviour: resampling target and jitter buffering.
@@ -110,6 +120,40 @@ mod tests {
         let cfg = Config::default();
         let text = toml::to_string(&cfg).expect("serialise");
         let parsed: Config = toml::from_str(&text).expect("deserialise");
+        assert_eq!(cfg, parsed);
+    }
+
+    #[test]
+    fn capture_defaults_preserve_default_device_loopback() {
+        let cfg = CaptureConfig::default();
+        assert!(cfg.device.is_none());
+        assert!(cfg.process.is_none());
+        assert!(!cfg.exclude_process);
+    }
+
+    #[test]
+    fn capture_omits_legacy_toml_still_parses() {
+        // A config written before process-loopback existed (no `process` /
+        // `exclude-process` keys) must still deserialise with the new defaults.
+        let legacy = r#"
+            [capture]
+            device = "Speakers"
+        "#;
+        let cfg: Config = toml::from_str(legacy).expect("legacy parses");
+        assert_eq!(cfg.capture.device.as_deref(), Some("Speakers"));
+        assert!(cfg.capture.process.is_none());
+        assert!(!cfg.capture.exclude_process);
+    }
+
+    #[test]
+    fn capture_process_fields_round_trip() {
+        let mut cfg = Config::default();
+        cfg.capture.process = Some("spotify.exe".to_owned());
+        cfg.capture.exclude_process = true;
+        let text = toml::to_string(&cfg).expect("serialise");
+        let parsed: Config = toml::from_str(&text).expect("deserialise");
+        assert_eq!(parsed.capture.process.as_deref(), Some("spotify.exe"));
+        assert!(parsed.capture.exclude_process);
         assert_eq!(cfg, parsed);
     }
 }

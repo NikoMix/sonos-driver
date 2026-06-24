@@ -54,6 +54,7 @@
 mod capture;
 mod device;
 mod format;
+mod process;
 
 #[cfg(windows)]
 #[allow(unsafe_code)]
