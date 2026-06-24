@@ -10,8 +10,10 @@ authors.workspace = true
 
 [dependencies]
 audio-core.workspace = true
-thiserror.workspace = true
 tracing.workspace = true
+socket2.workspace = true
+quick-xml.workspace = true
+serde = { workspace = true }
 
 [lints]
 workspace = true
