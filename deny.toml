@@ -34,6 +34,13 @@ multiple-versions = "warn"
 wildcards = "deny"
 # Known-problematic or license-encumbered crates are denied outright.
 deny = []
+# Not a real duplicate: our internal path crate is `audio-core` 0.1.0, while the
+# unrelated crates.io crate of the same name (`audio-core` 0.2.1, by udoprog) is
+# pulled transitively by rubato -> audioadapter. Both are permissively licensed;
+# skip the benign name-collision warning so the gate output stays intentional.
+skip = [
+    { crate = "audio-core@0.2.1" },
+]
 
 [sources]
 unknown-registry = "deny"
