@@ -17,7 +17,7 @@ with selectable latency/quality profiles.
 🚧 **Early development.** Phase 0 (the workspace, the `audio-core` trait contracts,
 the L16/WAV encoders, CLI skeleton, CI, and supply-chain gating) is complete and
 green. The hardware-touching pieces (WASAPI capture, Sonos SSDP/UPnP control, the HTTP
-server, FLAC, the DSP pipeline) are tracked as parallel workstreams — see
+server, the DSP pipeline) are tracked as parallel workstreams — see
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and the
 [open issues](https://github.com/NikoMix/sonos-driver/issues).
 
@@ -93,7 +93,7 @@ contracts in `audio-core`:
 audio-core ── traits & types (AudioFrame, Encoder, Transport, AudioSource, Config)
 audio-capture ── WASAPI loopback           (WS-A)
 audio-pipeline ── resample/convert/jitter  (WS-E)
-audio-codec ── L16/WAV done; FLAC/AAC      (WS-D)
+audio-codec ── L16/WAV/FLAC done; AAC/MP3 N/A (WS-D)
 stream-server ── chunked HTTP server       (WS-C)
 sonos-control ── SSDP + UPnP control       (WS-B)
 sonos-driver-core ── orchestration         (WS-F)

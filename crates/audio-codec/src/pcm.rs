@@ -11,13 +11,16 @@ use audio_core::{AudioFormat, AudioFrame, CodecProfile, Encoder, Error, Result};
 ///
 /// Rust float-to-int casts saturate, so out-of-range inputs map to the i16
 /// bounds rather than wrapping; the explicit clamp keeps rounding symmetric.
+///
+/// Shared by every 16-bit encoder (L16, WAV, FLAC) so the integer mapping is
+/// identical across profiles.
 #[allow(clippy::cast_possible_truncation)]
-fn f32_to_i16(sample: f32) -> i16 {
+pub(crate) fn f32_to_i16(sample: f32) -> i16 {
     let clamped = sample.clamp(-1.0, 1.0);
     (clamped * f32::from(i16::MAX)).round() as i16
 }
 
-fn ensure_channels(frame: &AudioFrame, expected: u16) -> Result<()> {
+pub(crate) fn ensure_channels(frame: &AudioFrame, expected: u16) -> Result<()> {
     if frame.channels() != expected {
         return Err(Error::codec(format!(
             "frame has {} channels but encoder was configured for {expected}",
