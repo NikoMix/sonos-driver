@@ -16,6 +16,7 @@ supersedes the old one (and update the old one's status to "Superseded by ADR-N"
 - [0006 — `windows`(-rs) bindings with self-managed WASAPI FFI for `audio-capture`](./0006-windows-rs-wasapi-bindings.md)
 - [0007 — Dependency-injected orchestration seams for hardware-free testing](./0007-orchestration-testability-seams.md)
 - [0008 — CLI configuration precedence, graceful stop, and control commands](./0008-cli-config-and-signals.md)
+- [0009 — Dependency upgrade policy and the rubato/audioadapter version pin](./0009-dependency-upgrade-policy.md)
 
 ## Template
 
