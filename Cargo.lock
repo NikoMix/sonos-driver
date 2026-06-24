@@ -663,6 +663,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "quick-xml"
+version = "0.40.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2474bd2e5029e7ccb6abb2ba48cf2383a333851dedf495901544281590c7da7f"
+dependencies = [
+ "memchr",
+ "serde",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -814,7 +824,9 @@ name = "sonos-control"
 version = "0.1.0"
 dependencies = [
  "audio-core 0.1.0",
- "thiserror",
+ "quick-xml",
+ "serde",
+ "socket2",
  "tracing",
 ]
 

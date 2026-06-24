@@ -63,6 +63,14 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 tokio-stream = "0.1"
 bytes = "1"
 
+# Networking & XML for Sonos SSDP discovery and UPnP SOAP control (WS-B).
+# `socket2` only configures the multicast UDP socket (reuse/TTL/bind); the socket
+# is then converted to `std::net::UdpSocket` so all recv/send stays in safe code
+# under `#![forbid(unsafe_code)]`. `quick-xml` (+ serde) parses the device
+# description and zone-group topology. No TLS: Sonos LAN control is plain HTTP.
+socket2 = "0.6"
+quick-xml = { version = "0.40", features = ["serialize"] }
+
 # Centralised lint policy. Every member opts in with `[lints] workspace = true`.
 # CI promotes these warnings to hard errors (`-D warnings`), keeping the tree
 # clean with minimal supervision while surfacing code-smell telemetry early.

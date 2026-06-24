@@ -9,8 +9,8 @@ too-many-arguments-threshold = 8
 # allow-list rather than replacing it.
 doc-valid-idents = [
     "WASAPI", "UPnP", "SSDP", "SOAP", "AVTransport", "RenderingControl",
-    "GroupRenderingControl", "ZoneGroupTopology", "SonosNet", "SonosMirror",
-    "RoomRelay", "AirPlay", "DIDL", "RIFF", "WAVE", "PCM", "L16", "FLAC",
-    "AAC", "MP3", "WAV", "DSP", "LAN", "SetAVTransportURI",
+    "GroupRenderingControl", "ZoneGroupTopology", "ZonePlayer", "SonosNet",
+    "SonosMirror", "RoomRelay", "AirPlay", "DIDL", "RIFF", "WAVE", "PCM",
+    "L16", "FLAC", "AAC", "MP3", "WAV", "DSP", "LAN", "SetAVTransportURI",
     "..",
 ]
