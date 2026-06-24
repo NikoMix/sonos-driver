@@ -74,15 +74,46 @@ cargo build --release --workspace  # optimised build
 ## Usage
 
 ```powershell
-# List Sonos rooms on the network (WS-B)
+# Discover Sonos rooms on the network (table view), or as JSON for scripting
 sonos-driver list
+sonos-driver list --json --timeout 5
 
-# Stream system audio to a room with the lowest-latency profile (WS-A/C/F)
+# Stream system audio to a room with the lowest-latency profile.
+# Press Ctrl-C to stop cleanly.
 sonos-driver stream --room "Living Room" --profile low-latency
+
+# Configure a whole session from flags (no file needed)
+sonos-driver stream --room "Office" --profile flac --bind 0.0.0.0 --port 8080 `
+  --target-rate 44100 --buffer-ms 80 --discovery-timeout 3
+
+# Preview the effective configuration without streaming
+sonos-driver stream --room "Office" --dry-run
+
+# Halt playback on a room (one-shot control command)
+sonos-driver stop --room "Living Room"
+sonos-driver stop --uuid RINCON_XXXXXXXXXXXX01400
 ```
 
+### Configuration files
+
+A session can be driven from a TOML file. Precedence is strict —
+**command-line flags override file values, which override built-in defaults**:
+
+```powershell
+# Generate a fully-commented config at its defaults, then edit it
+sonos-driver config example > sonos-driver.toml
+
+# Validate a file and print the effective configuration
+sonos-driver config check --config sonos-driver.toml
+
+# Use the file, overriding individual values with flags as needed
+sonos-driver --config sonos-driver.toml stream --port 9000
+```
+
+Add `-v`/`-vv` for more log detail, or `-q` to silence everything but errors.
+
 > Commands that depend on not-yet-implemented workstreams currently exit with a clear
-> `NotImplemented` message and a non-zero status.
+> `NotImplemented` message and status code `2`.
 
 ## Architecture
 

@@ -40,6 +40,13 @@ toml = "0.8"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 
+# CLI signal handling (WS-G). `ctrlc` registers the OS Ctrl-C / console-close
+# handler in safe code, so the CLI keeps `#![forbid(unsafe_code)]`. Permissive
+# (MIT OR Apache-2.0), cross-platform, and cargo-deny validated.
+ctrlc = "3"
+# Machine-readable output for scripting (`list --json`). MIT/Apache-2.0.
+serde_json = "1"
+
 # Audio DSP. `rubato` is the high-quality, real-time-safe resampler; its buffer
 # adapters come from `audioadapter-buffers`. The version floor is pinned to the
 # major `rubato` depends on so Cargo unifies on a single, trait-compatible
