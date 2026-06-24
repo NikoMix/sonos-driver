@@ -1,0 +1,21 @@
+[package]
+name = "audio-core"
+description = "Core types and trait contracts (audio frames, formats, codecs, transports, sources) shared across the sonos-driver workspace."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+serde = { workspace = true }
+
+[dev-dependencies]
+toml.workspace = true
+
+[lints]
+workspace = true

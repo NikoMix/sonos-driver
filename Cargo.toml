@@ -1,0 +1,68 @@
+# Workspace root for the sonos-driver project.
+#
+# A pure-Rust, user-mode Windows -> Sonos audio bridge organised as a set of
+# small, single-responsibility crates that build against the stable trait
+# contracts exposed by `audio-core`.
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/NikoMix/sonos-driver"
+homepage = "https://github.com/NikoMix/sonos-driver"
+authors = ["NikoMix"]
+keywords = ["sonos", "audio", "wasapi", "streaming", "windows"]
+categories = ["multimedia::audio", "network-programming"]
+
+# Internal crate path dependencies are declared once here and inherited by
+# members via `package.workspace = true` / `<dep>.workspace = true`.
+[workspace.dependencies]
+audio-core = { path = "crates/audio-core", version = "0.1.0" }
+audio-capture = { path = "crates/audio-capture", version = "0.1.0" }
+audio-pipeline = { path = "crates/audio-pipeline", version = "0.1.0" }
+audio-codec = { path = "crates/audio-codec", version = "0.1.0" }
+stream-server = { path = "crates/stream-server", version = "0.1.0" }
+sonos-control = { path = "crates/sonos-control", version = "0.1.0" }
+sonos-driver-core = { path = "crates/sonos-driver-core", version = "0.1.0" }
+
+# Shared third-party dependencies. Versions are intentionally permissive
+# (major-version floors) and locked precisely by Cargo.lock; `cargo update`
+# plus `cargo audit`/`cargo deny` keep them current and vulnerability-free.
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+
+# Centralised lint policy. Every member opts in with `[lints] workspace = true`.
+# CI promotes these warnings to hard errors (`-D warnings`), keeping the tree
+# clean with minimal supervision while surfacing code-smell telemetry early.
+[workspace.lints.rust]
+missing_docs = "warn"
+unsafe_code = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Stylistic / documentation lints that add friction without improving
+# correctness for this codebase. Error and panic docs are added with the real
+# implementations in each workstream.
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+# Optimise release builds for the real-time audio path.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

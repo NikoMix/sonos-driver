@@ -1,0 +1,19 @@
+# Normalize line endings to LF for all text so rustfmt's `newline_style = "Unix"`
+# and CI stay consistent across Windows, macOS, and Linux contributors.
+* text=auto eol=lf
+
+# Explicit source and config types kept as LF.
+*.rs    text eol=lf
+*.toml  text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf
+*.lock  text eol=lf
+
+# Binary assets must never be normalized.
+*.png   binary
+*.jpg   binary
+*.ico   binary
+*.wav   binary
+*.flac  binary

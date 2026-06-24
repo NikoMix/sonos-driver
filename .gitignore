@@ -1,0 +1,26 @@
+# Build artifacts
+/target
+**/*.rs.bk
+*.pdb
+
+# Cargo
+# Cargo.lock IS committed (this workspace produces binaries).
+
+# IDE / editor
+.idea/
+.vscode/
+*.iml
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Local env / secrets
+.env
+*.local.toml
+
+# Coverage / profiling output
+*.profraw
+/coverage
+lcov.info

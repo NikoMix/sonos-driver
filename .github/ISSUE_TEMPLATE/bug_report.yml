@@ -1,0 +1,59 @@
+name: Bug report
+description: Report a defect in the sonos-driver audio bridge.
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please confirm this is **not** an expectation
+        mismatch about latency first — see `docs/LATENCY-BUDGET.md`.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+      placeholder: Streaming to "Living Room" stops after ~30 s with an underrun.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      value: |
+        1. `sonos-driver stream --room "..." --profile low-latency`
+        2. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: profile
+    attributes:
+      label: Streaming profile
+      options:
+        - low-latency (L16 PCM)
+        - wav
+        - flac
+        - aac
+        - mp3
+        - n/a
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Output of `sonos-driver --version` or the commit SHA.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Windows build, CPU arch (x64/arm64), Sonos model(s) and firmware.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Run with `RUST_LOG=debug` and paste relevant output.
+      render: text
