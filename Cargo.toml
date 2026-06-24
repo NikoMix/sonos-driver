@@ -40,6 +40,14 @@ toml = "0.8"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 
+# Async stream-server (WS-C). Major-version floors; `Cargo.lock` pins the exact
+# latest patch, kept current by `cargo update` and clean by `cargo deny`/`audit`.
+# No TLS is pulled in: Sonos dials the bridge over plain HTTP on the LAN.
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+tokio-stream = "0.1"
+bytes = "1"
+
 # Centralised lint policy. Every member opts in with `[lints] workspace = true`.
 # CI promotes these warnings to hard errors (`-D warnings`), keeping the tree
 # clean with minimal supervision while surfacing code-smell telemetry early.

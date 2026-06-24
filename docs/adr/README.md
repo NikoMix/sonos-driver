@@ -11,6 +11,7 @@ supersedes the old one (and update the old one's status to "Superseded by ADR-N"
 - [0001 — User-mode WASAPI loopback (no kernel driver for v1)](./0001-user-mode-wasapi-loopback.md)
 - [0002 — Modular `Encoder`/`Transport`/`AudioSource` trait contracts](./0002-modular-codec-and-transport-traits.md)
 - [0003 — Honest latency targets (no sub-100 ms promise)](./0003-honest-latency-targets.md)
+- [0004 — `stream-server`: async `axum` HTTP with a broadcast ring buffer](./0004-stream-server-http.md)
 
 ## Template
 
