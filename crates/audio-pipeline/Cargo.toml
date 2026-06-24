@@ -11,6 +11,8 @@ authors.workspace = true
 [dependencies]
 audio-core.workspace = true
 tracing.workspace = true
+rubato.workspace = true
+audioadapter-buffers.workspace = true
 
 [lints]
 workspace = true

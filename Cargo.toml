@@ -40,6 +40,14 @@ toml = "0.8"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 
+# Audio DSP. `rubato` is the high-quality, real-time-safe resampler; its buffer
+# adapters come from `audioadapter-buffers`. The version floor is pinned to the
+# major `rubato` depends on so Cargo unifies on a single, trait-compatible
+# `audioadapter` graph (rubato 3.x requires the `^3.0` adapters). Both are
+# permissively licensed (MIT / MIT OR Apache-2.0) and cargo-deny validated.
+rubato = "3"
+audioadapter-buffers = "3"
+
 # Centralised lint policy. Every member opts in with `[lints] workspace = true`.
 # CI promotes these warnings to hard errors (`-D warnings`), keeping the tree
 # clean with minimal supervision while surfacing code-smell telemetry early.
