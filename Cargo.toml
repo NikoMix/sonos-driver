@@ -71,6 +71,23 @@ bytes = "1"
 socket2 = "0.6"
 quick-xml = { version = "0.40", features = ["serialize"] }
 
+# Windows API bindings for WASAPI loopback capture (WS-A, `audio-capture` only).
+# Pinned to the latest release and locked by Cargo.lock; MIT/Apache-licensed.
+# Only the Win32 sub-namespaces the capture path needs are enabled to keep build
+# times and the API surface tight.
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Media_KernelStreaming",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_Devices_FunctionDiscovery",
+] }
+
 # Centralised lint policy. Every member opts in with `[lints] workspace = true`.
 # CI promotes these warnings to hard errors (`-D warnings`), keeping the tree
 # clean with minimal supervision while surfacing code-smell telemetry early.
