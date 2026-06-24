@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Architecture & latency reality
+    url: https://github.com/NikoMix/sonos-driver/blob/main/docs/LATENCY-BUDGET.md
+    about: Why sub-100 ms to Sonos is impossible in software — read before filing a latency issue.

@@ -1,0 +1,41 @@
+# cargo-deny configuration: enforce supply-chain hygiene.
+# Run with `cargo deny check`. CI fails on advisories or disallowed licenses.
+
+[advisories]
+version = 2
+# Fail the build on any known vulnerability. `cargo audit` is run additionally.
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# Permissive licenses only. No copyleft/commercial-license dependencies are
+# permitted: if a capability is only available under such terms, it is built
+# in-house instead (per project policy).
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "CC0-1.0",
+]
+confidence-threshold = 0.9
+# The allow-list is intentionally forward-looking (FLAC and other audio deps
+# commonly add BSD/Zlib/ISC). Don't warn about entries no current dependency uses.
+unused-allowed-license = "allow"
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Known-problematic or license-encumbered crates are denied outright.
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

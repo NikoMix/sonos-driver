@@ -1,0 +1,41 @@
+name: Workstream task
+description: A Phase-1/2 workstream or sub-task tracked against the architecture.
+labels: ["workstream"]
+body:
+  - type: dropdown
+    id: workstream
+    attributes:
+      label: Workstream
+      options:
+        - "WS-A audio-capture (WASAPI loopback)"
+        - "WS-B sonos-control (SSDP + UPnP)"
+        - "WS-C stream-server (HTTP)"
+        - "WS-D audio-codec (FLAC / AAC)"
+        - "WS-E audio-pipeline (resample/jitter)"
+        - "WS-F sonos-driver-core (orchestration)"
+        - "WS-G sonos-driver-cli (UX + e2e)"
+        - "Phase 3 hardening / release"
+        - "Phase 4 research (virtual device, GUI)"
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome / definition of done
+      description: The observable behaviour and the tests that prove it.
+    validations:
+      required: true
+  - type: textarea
+    id: contracts
+    attributes:
+      label: Contracts touched
+      description: Which `audio-core` traits/types does this build against or change?
+  - type: textarea
+    id: tasks
+    attributes:
+      label: Checklist
+      value: |
+        - [ ] Implementation
+        - [ ] Unit tests (hardware-free where possible)
+        - [ ] `cargo clippy -- -D warnings` clean
+        - [ ] Docs / rustdoc updated

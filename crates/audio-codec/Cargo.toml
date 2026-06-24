@@ -1,0 +1,17 @@
+[package]
+name = "audio-codec"
+description = "Streaming audio encoders (L16 PCM, WAV, FLAC, AAC) for the sonos-driver bridge."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+audio-core.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

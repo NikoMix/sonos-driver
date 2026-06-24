@@ -1,0 +1,21 @@
+[package]
+name = "sonos-driver-core"
+description = "Orchestration core wiring capture, pipeline, codec, transport and Sonos control."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+audio-core.workspace = true
+audio-capture.workspace = true
+audio-pipeline.workspace = true
+audio-codec.workspace = true
+stream-server.workspace = true
+sonos-control.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

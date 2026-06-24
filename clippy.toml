@@ -1,0 +1,16 @@
+# Clippy configuration shared across the workspace.
+# A real-time audio path benefits from catching accidental cognitive-complexity
+# growth early; the threshold is deliberately strict to surface code smells.
+cognitive-complexity-threshold = 20
+too-many-arguments-threshold = 8
+
+# Domain vocabulary so `clippy::doc_markdown` does not flag legitimate protocol
+# and codec acronyms as un-backticked identifiers. `..` extends clippy's default
+# allow-list rather than replacing it.
+doc-valid-idents = [
+    "WASAPI", "UPnP", "SSDP", "SOAP", "AVTransport", "RenderingControl",
+    "GroupRenderingControl", "ZoneGroupTopology", "SonosNet", "SonosMirror",
+    "RoomRelay", "AirPlay", "DIDL", "RIFF", "WAVE", "PCM", "L16", "FLAC",
+    "AAC", "MP3", "WAV", "DSP", "LAN", "SetAVTransportURI",
+    "..",
+]

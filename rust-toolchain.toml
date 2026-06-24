@@ -1,0 +1,5 @@
+# Pin the toolchain so local builds and CI agree. Update deliberately.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-pc-windows-msvc"]
