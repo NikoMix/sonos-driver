@@ -12,6 +12,11 @@ authors.workspace = true
 audio-core.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+flacenc.workspace = true
+
+[dev-dependencies]
+# Pure-Rust FLAC decoder used to prove the FLAC encoder output is lossless.
+claxon.workspace = true
 
 [lints]
 workspace = true

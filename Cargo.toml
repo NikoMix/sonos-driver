@@ -40,6 +40,13 @@ toml = "0.8"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 
+# Audio codecs. `flacenc` is the pure-Rust FLAC encoder (Apache-2.0); default
+# features (log/par/serde) are disabled so the per-frame streaming path stays
+# single-threaded, dependency-light and deterministic. `claxon` is a zero-dep
+# pure-Rust FLAC decoder used only by the round-trip tests (dev-dependency).
+flacenc = { version = "0.5.1", default-features = false }
+claxon = "0.4.3"
+
 # Centralised lint policy. Every member opts in with `[lints] workspace = true`.
 # CI promotes these warnings to hard errors (`-D warnings`), keeping the tree
 # clean with minimal supervision while surfacing code-smell telemetry early.

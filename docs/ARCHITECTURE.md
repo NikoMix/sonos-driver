@@ -21,7 +21,7 @@ workstreams proceed in parallel without stepping on each other.
 | `audio-core` | Shared types & trait contracts: `AudioFrame`, `AudioFormat`, `Encoder`, `Transport`, `AudioSource`, `Config`, error model. Plus a `SyntheticSource` for hardware-free tests. | Phase 0 |
 | `audio-capture` | WASAPI loopback capture of the system render endpoint as an `AudioSource`. | WS-A |
 | `audio-pipeline` | Resampling, channel/format conversion, jitter/ring buffering. | WS-E |
-| `audio-codec` | `Encoder` implementations: L16 PCM & WAV (done), FLAC/AAC/MP3. | WS-D |
+| `audio-codec` | `Encoder` implementations: L16 PCM, WAV & FLAC (done); AAC/MP3 unsupported (see [ADR-0004](adr/0004-aac-mp3-codec-evaluation.md)). | WS-D |
 | `stream-server` | Local chunked HTTP server that Sonos pulls the stream from. | WS-C |
 | `sonos-control` | SSDP discovery + UPnP AVTransport/RenderingControl SOAP control. | WS-B |
 | `sonos-driver-core` | Orchestration: wires capture → pipeline → codec → server while driving the Sonos target; session lifecycle, metrics, latency budget. | WS-F |
