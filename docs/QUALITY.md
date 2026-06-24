@@ -40,7 +40,7 @@ of the total found in each crate (`y`). Symbols: 🔒 = no `unsafe`, declares
 | `audio-core` | 🔒 | 0/0 | Declares `#![forbid(unsafe_code)]`. |
 | `audio-capture` | ☢️ | **96/96** | The **only** `unsafe` in the workspace: the WASAPI COM/FFI island in the private `wasapi` module (`#[allow(unsafe_code)]`). |
 | `audio-pipeline` | 🔒 | 0/0 | Declares `#![forbid(unsafe_code)]`. |
-| `audio-codec` | ❓ | 0/0 | No `unsafe` used, but does **not** declare `#![forbid(unsafe_code)]` (see [Observations](#observations--follow-ups)). |
+| `audio-codec` | 🔒 | 0/0 | Declares `#![forbid(unsafe_code)]` (added in WS-L; see [ADR-0013](adr/0013-codec-hardening-and-aac-reeval.md)). |
 | `stream-server` | 🔒 | 0/0 | Declares `#![forbid(unsafe_code)]`. |
 | `sonos-control` | 🔒 | 0/0 | Declares `#![forbid(unsafe_code)]`. |
 | `sonos-driver-core` | 🔒 | 0/0 | Declares `#![forbid(unsafe_code)]`. |
@@ -66,6 +66,9 @@ dependency tree are unchanged upstream code:
 > Note: the dependency tree also contains a **third-party** `audio-core 0.2.1` from
 > crates.io (4/4 `unsafe` expr), pulled in transitively by the resampling stack. It is
 > a name collision and is **not** this workspace's internal `audio-core 0.1.0` (🔒).
+> Cargo keys crates on their source (path vs registry), so the two coexist harmlessly;
+> the decision to keep the internal name rather than rename is recorded in
+> [ADR-0013](adr/0013-codec-hardening-and-aac-reeval.md).
 
 ## Test coverage — `cargo-llvm-cov`
 
@@ -116,11 +119,10 @@ banned or duplicate crates, and only trusted sources.
 
 These are tracked here for transparency; none are blockers for v0.1.0.
 
-- **`audio-codec` does not declare `#![forbid(unsafe_code)]`.** `cargo-geiger`
-  confirms it uses **zero** `unsafe` today (0/0), but adding the lint would make that
-  guarantee enforced rather than incidental, matching the other pure-Rust crates. This
-  is a one-line crate-source change owned by the codec workstream, intentionally **not**
-  made here (this workstream does not modify crate behaviour).
+- **`audio-codec` `#![forbid(unsafe_code)]` — ✅ resolved (WS-L, Phase 4).** The lint is
+  now declared in `crates/audio-codec/src/lib.rs`, so its zero-`unsafe` status (0/0) is
+  enforced rather than incidental, matching every other pure-Rust crate. See
+  [ADR-0013](adr/0013-codec-hardening-and-aac-reeval.md).
 - **WASAPI FFI coverage is structurally ~0%** in automated runs and always will be
   without a hardware-in-the-loop CI runner; the manual checklist is the compensating
   control.

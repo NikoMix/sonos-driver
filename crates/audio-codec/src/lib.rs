@@ -16,6 +16,8 @@
 //!   [`audio_core::Error::NotImplemented`] for them (see
 //!   `docs/adr/0004-aac-mp3-codec-evaluation.md`).
 
+#![forbid(unsafe_code)]
+
 mod flac;
 mod pcm;
 

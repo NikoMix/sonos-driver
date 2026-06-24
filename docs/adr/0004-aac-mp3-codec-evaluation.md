@@ -53,21 +53,23 @@ Survey of AAC encoders available on crates.io:
 | --- | --- | --- | --- | --- |
 | `fdk-aac` / `fdk-aac-sys` | yes | no (FFI to Fraunhofer FDK) | non-free FDK licence + patent terms | **Rejected** — fails licence + `unsafe`/FFI |
 | `faac`-based bindings | yes | no (FFI) | GPL | **Rejected** — copyleft + FFI |
-| `oxideav-aac` 0.1.5 | yes (AAC-LC) | **yes** (no C, no FFI) | **MIT** | **Licence-clean, but deferred** |
+| `oxideav-aac` 0.1.5 | **no** (decoder-only) | **yes** (no C, no FFI) | **MIT** | **Licence-clean, but cannot encode yet** |
 
-`oxideav-aac` (MIT) is a genuine pure-Rust AAC-LC encoder/decoder whose only dependency
-is `oxideav-core` (MIT, "no C deps"); both would pass `cargo deny`. It is therefore the
-first AAC option that satisfies the licensing and memory-safety constraints. We still
-defer enabling it in WS-D, because:
+`oxideav-aac` (MIT, dependency `oxideav-core` MIT) is a genuine pure-Rust AAC effort and
+would pass `cargo deny`, but a Phase 4 re-verification of v0.1.5 against the crate's own
+source shows it is **decoder-only**: the `Encoder` side is not wired. Its README states the
+bit-exact wire writers exist but "there is no rate-control / psychoacoustic encoder
+back-end to drive them," and `register()` installs only the AAC *decoder*. There is thus no
+PCM→AAC path to adopt today. Even once an encoder back-end ships, two further costs apply:
 
-- **Maturity.** First published 2026-04-17, currently `0.1.x` with a low download count,
-  a single maintainer, and no published API docs. The sibling `oxideav-mp3` crate has
-  had *all* of its real (`0.1.x`) releases yanked (see below) — an ecosystem-churn signal
-  that argues against pinning an early `0.1` codec into a quality-critical path right now.
+- **Maturity.** First published 2026-04-17, currently `0.1.x` with a low download count and
+  a single maintainer. The sibling `oxideav-mp3` crate has had *all* of its real (`0.1.x`)
+  releases yanked (see below) — an ecosystem-churn signal that argues against pinning an
+  early `0.1` codec into a quality-critical path.
 - **Acceptance testing.** AAC is lossy, so the FLAC strategy (assert bit-exact decode)
   does not apply. A credible, non-circular acceptance test needs an *independent* decoder
   (e.g. Symphonia's AAC decoder) plus a bounded reconstruction-error metric. Designing and
-  tuning that is a workstream of its own and is out of WS-D's scope.
+  tuning that is a workstream of its own.
 
 Deferring keeps WS-D focused on its lossless deliverable and keeps every quality gate
 green with certainty, while not foreclosing AAC: adoption of `oxideav-aac` is tracked as
@@ -100,6 +102,22 @@ pure-Rust encoder exists, or we choose to build one.
   `Error::NotImplemented` rather than a silent fallback or a broken stream.
 - ⚠️ AAC/MP3 compatibility is unavailable for now. Mitigation: Sonos players accept FLAC
   and PCM/WAV, which the bridge already provides, so no target device is left unserved.
-- ⚠️ The AAC finding is time-sensitive: a license-clean pure-Rust encoder now exists, so
-  this decision should be revisited on its own merits (tracked as a follow-up), not
-  treated as permanent.
+- ⚠️ AAC/MP3 remain deferred. As re-verified in Phase 4 (2026-06-25), **no** licence-clean
+  pure-Rust AAC *encoder* exists yet (`oxideav-aac` 0.1.5 is decoder-only). Revisit when
+  `oxideav-aac` — or another permissive pure-Rust crate — ships a working encoder back-end;
+  tracked in ADR-0013 and issue #18.
+
+## Update — Phase 4 re-evaluation (2026-06-25)
+
+Phase 4 re-verified the AAC/MP3 encoder landscape against crate **source** (not crates.io
+descriptions). Findings: `oxideav-aac` 0.1.5 (MIT) is **decoder-only** — its encoder
+back-end (MDCT analysis, psychoacoustic model, bit-allocation, rate-control) is not
+implemented per the crate's own README; only bitstream write primitives exist. `fdk-aac`
+binds the Fraunhofer FDK library, whose licence grants no patent rights and is not
+permissive. `symphonia` is decode-only; `faac`/`faac-sys` are not published on crates.io.
+Writing a spec-compliant AAC-LC encoder from scratch is a multi-month effort yielding a
+*lossy* codec with *higher* latency (~1200–3000 ms) than the FLAC lossless path already
+shipped (~400–1000 ms, bit-transparent) — net-negative for this project. **Decision
+unchanged: `Aac`/`Mp3` keep returning `Error::NotImplemented`.** See ADR-0013 for the full
+verdict and re-evaluation trigger. This supersedes the earlier "a license-clean pure-Rust
+encoder now exists" framing, which relied on the crate's misleading description.
