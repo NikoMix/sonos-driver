@@ -17,7 +17,37 @@ pub use audio_pipeline as pipeline;
 pub use sonos_control as control;
 pub use stream_server as server;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
 use audio_core::{CodecProfile, Config, Error, LatencyClass, Result};
+
+/// A cloneable, thread-safe handle that signals a running [`Bridge`] to stop.
+///
+/// Obtain one with [`Bridge::stop_handle`] *before* calling [`Bridge::run`]
+/// (which blocks until stopped or a stage fails), then signal it from another
+/// thread — typically a Ctrl-C handler — to end the session gracefully. The
+/// handle only requests a stop; the bridge tears the session down (stopping the
+/// player and the stream server) at the next loop boundary. Dropping every
+/// handle does **not** stop the bridge.
+#[derive(Debug, Clone)]
+pub struct StopHandle {
+    flag: Arc<AtomicBool>,
+}
+
+impl StopHandle {
+    /// Request that the associated bridge stop at the next opportunity.
+    pub fn stop(&self) {
+        self.flag.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether a stop has already been requested through this handle (or any
+    /// clone of it).
+    #[must_use]
+    pub fn is_stop_requested(&self) -> bool {
+        self.flag.load(Ordering::SeqCst)
+    }
+}
 
 /// Live counters describing a running bridge session, surfaced for telemetry.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -62,6 +92,7 @@ impl LatencyEstimate {
 pub struct Bridge {
     config: Config,
     metrics: BridgeMetrics,
+    stop: Arc<AtomicBool>,
 }
 
 impl Bridge {
@@ -71,6 +102,7 @@ impl Bridge {
         Self {
             config,
             metrics: BridgeMetrics::default(),
+            stop: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -86,19 +118,29 @@ impl Bridge {
         self.metrics
     }
 
+    /// A cloneable handle that stops this bridge while [`run`](Self::run) is
+    /// blocking. Acquire it before calling `run`, e.g. to wire a Ctrl-C handler.
+    #[must_use]
+    pub fn stop_handle(&self) -> StopHandle {
+        StopHandle {
+            flag: Arc::clone(&self.stop),
+        }
+    }
+
     /// The latency estimate for the configured streaming profile.
     #[must_use]
     pub fn latency_estimate(&self) -> LatencyEstimate {
         LatencyEstimate::for_profile(self.config.stream.profile)
     }
 
-    /// Run the bridge until cancelled.
+    /// Run the bridge until [stopped](StopHandle::stop) or a stage fails.
     ///
     /// # Errors
     ///
     /// Currently returns [`Error::NotImplemented`]; WS-F wires the capture,
-    /// encode, transport and control stages together and returns runtime
-    /// failures from any stage.
+    /// encode, transport and control stages together (observing the stop flag
+    /// via [`stop_handle`](Self::stop_handle) at each loop boundary) and returns
+    /// runtime failures from any stage.
     pub fn run(&mut self) -> Result<()> {
         Err(Error::NotImplemented(
             "sonos-driver-core: the capture/encode/stream loop is implemented in WS-F",
@@ -123,5 +165,17 @@ mod tests {
     fn run_reports_not_implemented_for_now() {
         let mut bridge = Bridge::new(Config::default());
         assert!(matches!(bridge.run(), Err(Error::NotImplemented(_))));
+    }
+
+    #[test]
+    fn stop_handle_signals_through_clones() {
+        let bridge = Bridge::new(Config::default());
+        let handle = bridge.stop_handle();
+        let clone = handle.clone();
+        assert!(!handle.is_stop_requested());
+        clone.stop();
+        // Both the original handle and the bridge's flag observe the request.
+        assert!(handle.is_stop_requested());
+        assert!(bridge.stop_handle().is_stop_requested());
     }
 }
