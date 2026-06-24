@@ -3,12 +3,16 @@
 //!
 //! # Workstream WS-F (Phase 2)
 //!
-//! [`Bridge`] owns the session lifecycle: it starts the stream server, points
-//! the selected Sonos room at it, then runs the capture/encode loop on a
-//! dedicated thread, exposing live [`BridgeMetrics`]. Phase 0 establishes the
-//! public surface and a re-export of the building-block crates so the CLI and
-//! integration tests compile against a stable API; the run loop is implemented
-//! in WS-F.
+//! [`Bridge`] owns the session lifecycle: it resolves the Sonos target, starts
+//! the stream server, points the player at it, then runs the capture → pipeline
+//! → encode → publish loop on a dedicated thread, exposing live
+//! [`BridgeMetrics`] and a [`ControllableLatency`] snapshot. [`Bridge::run`]
+//! resolves the real capture source and Sonos controller and delegates to the
+//! dependency-injection seam [`Bridge::run_with`], which the hardware-free
+//! end-to-end latency harness drives with a synthetic source and an in-process
+//! [`PlayerControl`]. See `docs/adr/0007-orchestration-testability-seams.md`.
+
+#![forbid(unsafe_code)]
 
 pub use audio_capture as capture;
 pub use audio_codec as codec;
@@ -17,10 +21,22 @@ pub use audio_pipeline as pipeline;
 pub use sonos_control as control;
 pub use stream_server as server;
 
+mod latency;
+mod metrics;
+mod player;
+mod session;
+
+pub use latency::ControllableLatency;
+pub use player::PlayerControl;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use audio_core::{CodecProfile, Config, Error, LatencyClass, Result};
+use audio_core::{AudioSource, CaptureConfig, CodecProfile, Config, LatencyClass, Result};
+
+use crate::latency::LatencyAccumulator;
+use crate::metrics::SharedMetrics;
+use crate::player::resolve_target;
 
 /// A cloneable, thread-safe handle that signals a running [`Bridge`] to stop.
 ///
@@ -91,7 +107,8 @@ impl LatencyEstimate {
 #[derive(Debug)]
 pub struct Bridge {
     config: Config,
-    metrics: BridgeMetrics,
+    metrics: Arc<SharedMetrics>,
+    latency: Arc<LatencyAccumulator>,
     stop: Arc<AtomicBool>,
 }
 
@@ -101,7 +118,8 @@ impl Bridge {
     pub fn new(config: Config) -> Self {
         Self {
             config,
-            metrics: BridgeMetrics::default(),
+            metrics: Arc::new(SharedMetrics::default()),
+            latency: Arc::new(LatencyAccumulator::default()),
             stop: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -112,10 +130,24 @@ impl Bridge {
         &self.config
     }
 
-    /// A snapshot of current metrics.
+    /// A live snapshot of current metrics.
+    ///
+    /// Safe to call from another thread while [`run`](Self::run) is blocking;
+    /// the counters are updated by the encode loop as the session progresses.
     #[must_use]
     pub fn metrics(&self) -> BridgeMetrics {
-        self.metrics
+        self.metrics.snapshot()
+    }
+
+    /// A live snapshot of the *controllable* software latency (read → publish),
+    /// excluding the fixed Sonos device buffer.
+    ///
+    /// See `docs/LATENCY-BUDGET.md` and
+    /// `docs/adr/0007-orchestration-testability-seams.md`; for the full,
+    /// Sonos-buffer-inclusive figure use [`latency_estimate`](Self::latency_estimate).
+    #[must_use]
+    pub fn controllable_latency(&self) -> ControllableLatency {
+        self.latency.snapshot()
     }
 
     /// A cloneable handle that stops this bridge while [`run`](Self::run) is
@@ -135,21 +167,62 @@ impl Bridge {
 
     /// Run the bridge until [stopped](StopHandle::stop) or a stage fails.
     ///
+    /// Resolves the Sonos target from `config.sonos` (a `uuid` takes precedence
+    /// over a `room`), opens the platform capture source, then delegates to
+    /// [`run_with`](Self::run_with). The stop flag is observed at every loop
+    /// boundary; on stop or end-of-stream the session tears down cleanly and
+    /// returns `Ok(())`.
+    ///
     /// # Errors
     ///
-    /// Currently returns [`Error::NotImplemented`]; WS-F wires the capture,
-    /// encode, transport and control stages together (observing the stop flag
-    /// via [`stop_handle`](Self::stop_handle) at each loop boundary) and returns
-    /// runtime failures from any stage.
+    /// Returns [`audio_core::Error::Config`] when no Sonos target is configured,
+    /// [`audio_core::Error::Control`] when the target cannot be found,
+    /// [`audio_core::Error::Capture`] when the capture device cannot be opened,
+    /// and propagates any stage failure that ends the session.
     pub fn run(&mut self) -> Result<()> {
-        Err(Error::NotImplemented(
-            "sonos-driver-core: the capture/encode/stream loop is implemented in WS-F",
-        ))
+        let control = resolve_target(&self.config.sonos)?;
+        let source = open_capture(&self.config.capture)?;
+        self.run_with(source, Box::new(control))
     }
+
+    /// Run the bridge against an injected source and player control.
+    ///
+    /// This is the dependency-injection seam behind [`run`](Self::run): it skips
+    /// device discovery and capture, wiring the supplied [`AudioSource`] and
+    /// [`PlayerControl`] through the same session lifecycle. The hardware-free
+    /// end-to-end harness uses it to exercise the full loop with a synthetic
+    /// source and an in-process player. See
+    /// `docs/adr/0007-orchestration-testability-seams.md`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any stage failure (encoder construction, server start,
+    /// playback control, or the encode loop) that ends the session.
+    pub fn run_with(
+        &mut self,
+        source: Box<dyn AudioSource>,
+        control: Box<dyn PlayerControl>,
+    ) -> Result<()> {
+        session::run_session(
+            &self.config,
+            source,
+            control,
+            &self.stop,
+            &self.metrics,
+            &self.latency,
+        )
+    }
+}
+
+/// Open the platform capture source for the configured device.
+fn open_capture(config: &CaptureConfig) -> Result<Box<dyn AudioSource>> {
+    Ok(Box::new(audio_capture::LoopbackCapture::open(config)?))
 }
 
 #[cfg(test)]
 mod tests {
+    use audio_core::Error;
+
     use super::*;
 
     #[test]
@@ -162,9 +235,21 @@ mod tests {
     }
 
     #[test]
-    fn run_reports_not_implemented_for_now() {
+    fn run_requires_a_configured_target() {
+        // The default config names neither a uuid nor a room, so `run` fails
+        // fast with a configuration error and never touches the network.
         let mut bridge = Bridge::new(Config::default());
-        assert!(matches!(bridge.run(), Err(Error::NotImplemented(_))));
+        assert!(matches!(bridge.run(), Err(Error::Config(_))));
+    }
+
+    #[test]
+    fn fresh_bridge_reports_zeroed_metrics_and_latency() {
+        let bridge = Bridge::new(Config::default());
+        assert_eq!(bridge.metrics(), BridgeMetrics::default());
+        assert_eq!(
+            bridge.controllable_latency(),
+            ControllableLatency::default()
+        );
     }
 
     #[test]
