@@ -14,6 +14,7 @@ supersedes the old one (and update the old one's status to "Superseded by ADR-N"
 - [0004 — FLAC adopted; AAC/MP3 deferred (licensing + maturity)](./0004-aac-mp3-codec-evaluation.md)
 - [0005 — `stream-server`: async `axum` HTTP with a broadcast ring buffer](./0005-stream-server-http.md)
 - [0006 — `windows`(-rs) bindings with self-managed WASAPI FFI for `audio-capture`](./0006-windows-rs-wasapi-bindings.md)
+- [0007 — Dependency-injected orchestration seams for hardware-free testing](./0007-orchestration-testability-seams.md)
 - [0008 — CLI configuration precedence, graceful stop, and control commands](./0008-cli-config-and-signals.md)
 
 ## Template
