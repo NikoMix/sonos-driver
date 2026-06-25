@@ -1,11 +1,19 @@
 name: Release
 
-# Build and publish a portable Windows release archive.
+# Build, verify, and publish the Windows release artifacts:
+#   * a portable zip (both binaries, docs, licences, example config), and
+#   * a single-file Inno Setup installer (.exe),
+# accompanied by a SHA256SUMS.txt checksum manifest.
 #
-# NOTE: GitHub Actions is currently billing-blocked on this private repository (runners
-# fail to start), so this workflow does not execute yet. It is kept correct and ready for
-# when the owner makes the repo public, raises the Actions spending limit, or adds a
-# self-hosted runner. Until then, releases are cut locally — see docs/RELEASING.md.
+# The job gates the artifacts behind the full quality suite (fmt, clippy -D
+# warnings, the workspace tests, a release build, cargo-deny, and cargo-audit)
+# so a tag can never publish an unverified build.
+#
+# NOTE: GitHub Actions is currently billing-blocked on this private repository
+# (runners fail to start), so this workflow does not execute yet. It is kept
+# correct and ready for when the owner makes the repo public, raises the Actions
+# spending limit, or adds a self-hosted runner. Until then, releases are cut
+# locally — see docs/RELEASING.md.
 
 on:
   push:
@@ -14,7 +22,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -25,28 +33,101 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
-  package:
-    name: Build & package (x86_64-pc-windows-msvc)
+  verify:
+    name: Verify (fmt, clippy, test, release build)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install Rust (stable + rustfmt + clippy)
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.1
+      - name: rustfmt
+        run: cargo fmt --all --check
+      - name: clippy (warnings are errors)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Test
+        run: cargo test --workspace --all-features
+      - name: Release build
+        run: cargo build --workspace --release
+
+  deny:
+    name: Supply chain (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: cargo-deny (licenses, advisories, bans, sources)
+        uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2.0.13
+        with:
+          command: check
+          arguments: --all-features
+
+  audit:
+    name: Vulnerabilities (cargo-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: RustSec audit
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  package:
+    name: Package & publish (x86_64-pc-windows-msvc)
+    needs: [verify, deny, audit]
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
+          toolchain: stable
           targets: x86_64-pc-windows-msvc
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.1
 
-      - name: Build & package portable zip
+      - name: Install Inno Setup (installer compiler)
+        run: choco install innosetup -y --no-progress
+
+      - name: Build binaries, portable zip, and installer
         shell: pwsh
-        run: ./scripts/package.ps1 -OutputDir dist
+        run: ./scripts/build-installer.ps1 -OutputDir dist -RequireInstaller
 
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+      - name: Compute SHA-256 checksums
+        shell: pwsh
+        run: |
+          $artifacts = Get-ChildItem dist -File |
+            Where-Object { $_.Extension -in '.zip', '.exe' }
+          if (-not $artifacts) { throw "No release artifacts found in dist/." }
+          $sums = foreach ($a in $artifacts) {
+            $hash = (Get-FileHash $a.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($a.Name)"
+          }
+          $sums | Set-Content -Path dist/SHA256SUMS.txt -Encoding ascii
+          Get-Content dist/SHA256SUMS.txt
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: sonos-driver-windows-x86_64
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*setup.exe
+            dist/SHA256SUMS.txt
           if-no-files-found: error
 
       - name: Publish GitHub Release
@@ -55,9 +136,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $zip = Get-ChildItem dist/*.zip | Select-Object -First 1
-          if (-not $zip) { throw "No release archive found in dist/." }
-          gh release create $env:GITHUB_REF_NAME $zip.FullName `
+          $assets = @()
+          $assets += (Get-ChildItem dist/*.zip | Select-Object -First 1).FullName
+          $setup = Get-ChildItem dist/*setup.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($setup) { $assets += $setup.FullName }
+          $assets += (Join-Path 'dist' 'SHA256SUMS.txt')
+          if (-not $assets) { throw "No release assets found in dist/." }
+          gh release create $env:GITHUB_REF_NAME @assets `
             --title "sonos-driver $env:GITHUB_REF_NAME" `
             --generate-notes `
             --verify-tag

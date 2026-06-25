@@ -16,13 +16,13 @@ use audio_core::{
 };
 
 /// Every selectable [`CodecProfile`], in presentation order, for the picker.
-pub const ALL_PROFILES: [CodecProfile; 5] = [
-    CodecProfile::L16Pcm,
-    CodecProfile::Wav,
-    CodecProfile::Flac,
-    CodecProfile::Aac,
-    CodecProfile::Mp3,
-];
+///
+/// Only profiles with a shippable encoder are offered. AAC and MP3 have no
+/// licence-clean pure-Rust encoder (see ADR-0004) and would fail at start, so
+/// they are intentionally excluded; [`CodecProfile::has_encoder`] is the single
+/// source of truth and [`SettingsForm::to_config`] rejects any other profile.
+pub const ALL_PROFILES: [CodecProfile; 3] =
+    [CodecProfile::L16Pcm, CodecProfile::Wav, CodecProfile::Flac];
 
 /// The editable, string-backed mirror of [`Config`] bound to the settings UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,8 +89,10 @@ impl SettingsForm {
     /// # Errors
     ///
     /// Returns [`audio_core::Error::Config`] when any field is malformed: a
-    /// non-numeric or zero port, an unparseable bind address, or a target
-    /// sample rate outside `8000..=384000` Hz.
+    /// non-numeric or zero port, an unparseable bind address, a target sample
+    /// rate outside `8000..=384000` Hz, a codec profile without a shippable
+    /// encoder (AAC/MP3, see ADR-0004), or `exclude-process` set without a
+    /// process to exclude.
     pub fn to_config(&self) -> Result<Config> {
         let device = optional_trimmed(&self.device);
         let target_sample_rate = parse_sample_rate(&self.target_sample_rate)?;
@@ -101,6 +103,19 @@ impl SettingsForm {
         let uuid = optional_trimmed(&self.uuid);
         let discovery_timeout_secs =
             parse_u32_or(&self.discovery_timeout_secs, 0, "discovery-timeout-secs")?;
+
+        if !self.profile.has_encoder() {
+            return Err(Error::config(format!(
+                "codec profile '{}' has no encoder yet (see ADR-0004); choose l16-pcm, wav or flac",
+                self.profile.name()
+            )));
+        }
+        if self.exclude_process && optional_trimmed(self.process.as_deref().unwrap_or("")).is_none()
+        {
+            return Err(Error::config(
+                "exclude-process requires a capture process to exclude; set one or disable exclude-process",
+            ));
+        }
 
         Ok(Config {
             capture: CaptureConfig {
@@ -307,8 +322,24 @@ mod tests {
     }
 
     #[test]
-    fn all_profiles_are_unique_and_cover_the_enum() {
-        assert_eq!(ALL_PROFILES.len(), 5);
+    fn all_profiles_have_encoders_and_lead_with_the_default() {
+        assert_eq!(ALL_PROFILES.len(), 3);
         assert_eq!(ALL_PROFILES[0], CodecProfile::L16Pcm);
+        assert!(ALL_PROFILES.iter().all(|profile| profile.has_encoder()));
+    }
+
+    #[test]
+    fn to_config_rejects_a_profile_without_an_encoder() {
+        let mut form = SettingsForm::from_config(&Config::default());
+        form.profile = CodecProfile::Aac;
+        assert!(form.to_config().is_err());
+    }
+
+    #[test]
+    fn to_config_rejects_exclude_process_without_a_process() {
+        let mut form = SettingsForm::from_config(&Config::default());
+        form.exclude_process = true;
+        form.process = None;
+        assert!(form.to_config().is_err());
     }
 }

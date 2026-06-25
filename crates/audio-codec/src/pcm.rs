@@ -5,6 +5,8 @@
 //! 16-bit integer PCM. They are the lowest-latency encoders because there is no
 //! compression stage on the audio hot path.
 
+use std::borrow::Cow;
+
 use audio_core::{AudioFormat, AudioFrame, CodecProfile, Encoder, Error, Result};
 
 /// Convert a single `f32` sample in `[-1.0, 1.0]` to 16-bit signed PCM.
@@ -62,6 +64,18 @@ impl Default for L16PcmEncoder {
 impl Encoder for L16PcmEncoder {
     fn profile(&self) -> CodecProfile {
         CodecProfile::L16Pcm
+    }
+
+    fn content_type(&self) -> Cow<'static, str> {
+        // Raw L16 is header-less, so the sample rate and channel count must be
+        // advertised in the MIME type itself (RFC 2586). Without an explicit
+        // `channels` parameter a player defaults to mono, and without `rate` it
+        // has no sample rate at all — either mis-renders our stereo CD-rate
+        // stream. WAV/FLAC carry this in-band and keep the profile default.
+        Cow::Owned(format!(
+            "audio/L16;rate={};channels={}",
+            self.format.sample_rate, self.format.channels
+        ))
     }
 
     fn encode(&mut self, frame: &AudioFrame, out: &mut Vec<u8>) -> Result<()> {
@@ -159,6 +173,26 @@ mod tests {
         // Saturation rather than wrap-around for out-of-range input.
         assert_eq!(f32_to_i16(2.0), i16::MAX);
         assert_eq!(f32_to_i16(-2.0), -i16::MAX);
+    }
+
+    #[test]
+    fn l16_content_type_advertises_rate_and_channels() {
+        // The default CD-stereo output format.
+        let enc = L16PcmEncoder::with_format(AudioFormat::cd_stereo());
+        assert_eq!(
+            enc.content_type().as_ref(),
+            "audio/L16;rate=44100;channels=2"
+        );
+
+        // A non-44100 output rate must be reflected verbatim so a resampled
+        // stream is interpreted at the right speed.
+        let enc48 = L16PcmEncoder::with_format(
+            AudioFormat::new(48_000, 2, audio_core::SampleFormat::I16).expect("format"),
+        );
+        assert_eq!(
+            enc48.content_type().as_ref(),
+            "audio/L16;rate=48000;channels=2"
+        );
     }
 
     #[test]

@@ -8,7 +8,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.90"
 license = "MIT OR Apache-2.0"
@@ -21,13 +21,13 @@ categories = ["multimedia::audio", "network-programming"]
 # Internal crate path dependencies are declared once here and inherited by
 # members via `package.workspace = true` / `<dep>.workspace = true`.
 [workspace.dependencies]
-audio-core = { path = "crates/audio-core", version = "0.1.0" }
-audio-capture = { path = "crates/audio-capture", version = "0.1.0" }
-audio-pipeline = { path = "crates/audio-pipeline", version = "0.1.0" }
-audio-codec = { path = "crates/audio-codec", version = "0.1.0" }
-stream-server = { path = "crates/stream-server", version = "0.1.0" }
-sonos-control = { path = "crates/sonos-control", version = "0.1.0" }
-sonos-driver-core = { path = "crates/sonos-driver-core", version = "0.1.0" }
+audio-core = { path = "crates/audio-core", version = "0.2.0" }
+audio-capture = { path = "crates/audio-capture", version = "0.2.0" }
+audio-pipeline = { path = "crates/audio-pipeline", version = "0.2.0" }
+audio-codec = { path = "crates/audio-codec", version = "0.2.0" }
+stream-server = { path = "crates/stream-server", version = "0.2.0" }
+sonos-control = { path = "crates/sonos-control", version = "0.2.0" }
+sonos-driver-core = { path = "crates/sonos-driver-core", version = "0.2.0" }
 
 # Shared third-party dependencies. Versions are intentionally permissive
 # (major-version floors) and locked precisely by Cargo.lock; `cargo update`

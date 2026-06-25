@@ -55,7 +55,10 @@ use audio_core::{Error, Result};
 
 pub use description::{fetch_device, parse_device_description};
 pub use ssdp::{SsdpResponse, SsdpSearch, SSDP_MULTICAST_ADDR, SSDP_PORT, ZONE_PLAYER_TARGET};
-pub use topology::{find_room_coordinator, parse_zone_group_state, ZoneGroup, ZoneGroupMember};
+pub use topology::{
+    find_room_coordinator, find_uuid_coordinator, parse_zone_group_state, ZoneGroup,
+    ZoneGroupMember,
+};
 
 /// The Sonos control port (fixed across the product line).
 pub const SONOS_CONTROL_PORT: u16 = 1400;
@@ -190,6 +193,34 @@ pub fn controller_for_room(timeout: Duration, room: &str) -> Result<SonosControl
     let groups = discover_zone_groups(timeout)?;
     let coordinator = find_room_coordinator(&groups, room)
         .ok_or_else(|| Error::control(format!("no Sonos room named '{room}' was found")))?;
+    let ip = coordinator
+        .ip()
+        .ok_or_else(|| Error::control("group coordinator has no usable IPv4 address"))?;
+    let device = fetch_device(&coordinator.location, timeout).unwrap_or_else(|_| SonosDevice {
+        uuid: coordinator.uuid.clone(),
+        room_name: coordinator.zone_name.clone(),
+        model_name: "Sonos".to_owned(),
+        ip,
+    });
+    Ok(SonosController::new(device))
+}
+
+/// Build a [`SonosController`] for the device `uuid`, resolved to its group
+/// coordinator.
+///
+/// A UUID can identify a non-coordinator group member (such as the secondary
+/// speaker of a bonded stereo pair), which silently ignores transport commands;
+/// this resolves the UUID's group to the coordinator that must receive them. It
+/// mirrors [`controller_for_room`] but keys on the stable device UUID.
+///
+/// # Errors
+///
+/// Returns [`Error::Control`] if discovery finds no device with that UUID or the
+/// coordinator has no usable address.
+pub fn controller_for_uuid(timeout: Duration, uuid: &str) -> Result<SonosController> {
+    let groups = discover_zone_groups(timeout)?;
+    let coordinator = find_uuid_coordinator(&groups, uuid)
+        .ok_or_else(|| Error::control(format!("no Sonos device with uuid '{uuid}' was found")))?;
     let ip = coordinator
         .ip()
         .ok_or_else(|| Error::control("group coordinator has no usable IPv4 address"))?;

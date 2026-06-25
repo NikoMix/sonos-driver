@@ -6,7 +6,8 @@
     Produces a self-contained, portable release archive that needs no Rust toolchain on
     the target machine. The zip bundles:
 
-      * sonos-driver.exe   - the release CLI binary
+      * sonos-driver.exe       - the release CLI binary
+      * sonos-driver-gui.exe   - the system-tray desktop GUI binary
       * README.md          - the project front door
       * CHANGELOG.md       - release notes
       * LICENSE-MIT        - MIT licence text
@@ -88,18 +89,22 @@ $version = $verMatch.Groups[1].Value
 Write-Host "sonos-driver version: $version" -ForegroundColor Cyan
 
 # --- Build (unless skipped) --------------------------------------------------
-$exePath = Join-Path $repoRoot 'target\release\sonos-driver.exe'
+$cliExe = Join-Path $repoRoot 'target\release\sonos-driver.exe'
+$guiExe = Join-Path $repoRoot 'target\release\sonos-driver-gui.exe'
+$binaries = @($cliExe, $guiExe)
 
 if ($SkipBuild) {
     Write-Host 'Skipping build (-SkipBuild).' -ForegroundColor Yellow
-    if (-not (Test-Path $exePath)) {
-        throw "-SkipBuild was set but '$exePath' does not exist. Build it first."
+    foreach ($exe in $binaries) {
+        if (-not (Test-Path $exe)) {
+            throw "-SkipBuild was set but '$exe' does not exist. Build it first."
+        }
     }
 } else {
-    Write-Host 'Building release binary: cargo build --release -p sonos-driver-cli' -ForegroundColor Cyan
+    Write-Host 'Building release binaries: cargo build --release -p sonos-driver-cli -p sonos-driver-gui' -ForegroundColor Cyan
     Push-Location $repoRoot
     try {
-        & cargo build --release -p sonos-driver-cli
+        & cargo build --release -p sonos-driver-cli -p sonos-driver-gui
         if ($LASTEXITCODE -ne 0) {
             throw "cargo build failed with exit code $LASTEXITCODE. " +
                   'Ensure the MSVC environment is initialised (see README "Building").'
@@ -107,8 +112,10 @@ if ($SkipBuild) {
     } finally {
         Pop-Location
     }
-    if (-not (Test-Path $exePath)) {
-        throw "Build reported success but '$exePath' is missing."
+    foreach ($exe in $binaries) {
+        if (-not (Test-Path $exe)) {
+            throw "Build reported success but '$exe' is missing."
+        }
     }
 }
 
@@ -132,7 +139,8 @@ $stageDir  = Join-Path $stageRoot $stageName
 New-Item -ItemType Directory -Path $stageDir -Force | Out-Null
 
 try {
-    Copy-Item $exePath (Join-Path $stageDir 'sonos-driver.exe')
+    Copy-Item $cliExe (Join-Path $stageDir 'sonos-driver.exe')
+    Copy-Item $guiExe (Join-Path $stageDir 'sonos-driver-gui.exe')
     foreach ($f in $files) {
         Copy-Item $f.Src (Join-Path $stageDir $f.Name)
     }
@@ -140,7 +148,7 @@ try {
     # Generate the example config from the binary itself so it can never drift.
     $exampleDest = Join-Path $stageDir 'sonos-driver.toml'
     Write-Host 'Generating example config via `sonos-driver config example`' -ForegroundColor Cyan
-    $exampleToml = & $exePath config example 2>$null
+    $exampleToml = & $cliExe config example 2>$null
     if ($LASTEXITCODE -eq 0 -and $exampleToml) {
         $text = ($exampleToml -join "`r`n") + "`r`n"
         [System.IO.File]::WriteAllText($exampleDest, $text, (New-Object System.Text.UTF8Encoding($false)))

@@ -349,7 +349,7 @@ mod tests {
     fn content_type_is_audio_flac() {
         let enc = FlacEncoder::new().expect("encoder");
         assert_eq!(enc.profile(), CodecProfile::Flac);
-        assert_eq!(enc.content_type(), "audio/flac");
+        assert_eq!(enc.content_type().as_ref(), "audio/flac");
     }
 
     #[test]

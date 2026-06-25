@@ -45,9 +45,10 @@ Then:
 
 ## 3. Cut the release locally (authoritative today)
 
-`scripts/package.ps1` builds the release binary and assembles a portable, self-contained
-zip (binary + README + CHANGELOG + both licences + a generated example config). It needs no
-extra crate or `xtask` (see ADR-0010) and only built-in PowerShell cmdlets.
+`scripts/package.ps1` builds **both** release binaries (the CLI and the tray GUI) and
+assembles a portable, self-contained zip (both binaries + README + CHANGELOG + both
+licences + a generated example config). It needs no extra crate or `xtask` (see ADR-0010)
+and only built-in PowerShell cmdlets.
 
 From a Developer PowerShell for VS (or after running `vcvars64.bat`):
 
@@ -58,6 +59,21 @@ pwsh -File scripts/package.ps1            # -> dist\sonos-driver-<version>-x86_6
 The script prints the archive path and size. To package an already-built binary without
 rebuilding, use `-SkipBuild`; to change the output directory, use `-OutputDir <path>`.
 
+### Build the installer (optional)
+
+`scripts/build-installer.ps1` compiles a single-file Inno Setup installer
+(`sonos-driver-<version>-x86_64-setup.exe`) from the **same payload** as the zip, so the
+two artifacts are identical by construction (see ADR-0015):
+
+```powershell
+choco install innosetup                  # one-time: installs the ISCC compiler
+pwsh -File scripts/build-installer.ps1   # -> dist\sonos-driver-<version>-x86_64-setup.exe
+```
+
+If the Inno Setup compiler (`ISCC.exe`) is not found, the script warns and skips the
+installer (the zip is unaffected) unless you pass `-RequireInstaller`. Attach the installer
+to the Release alongside the zip in the Publish step below.
+
 ### Publish
 
 1. Tag and push:
@@ -65,26 +81,45 @@ rebuilding, use `-SkipBuild`; to change the output directory, use `-OutputDir <p
    git tag -a vX.Y.Z -m "sonos-driver vX.Y.Z"
    git push origin vX.Y.Z
    ```
-2. Create the GitHub Release and attach the zip (uses the pre-installed `gh` CLI):
+2. Create the GitHub Release and attach the zip, the installer, and a checksum file
+   (uses the pre-installed `gh` CLI):
    ```powershell
-   gh release create vX.Y.Z dist\sonos-driver-X.Y.Z-x86_64-pc-windows-msvc.zip `
+   $sha = Get-FileHash dist\*.zip, dist\*setup.exe -Algorithm SHA256 |
+     ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) }
+   $sha | Set-Content dist\SHA256SUMS.txt -Encoding ascii
+   gh release create vX.Y.Z `
+     dist\sonos-driver-X.Y.Z-x86_64-pc-windows-msvc.zip `
+     dist\sonos-driver-X.Y.Z-x86_64-setup.exe `
+     dist\SHA256SUMS.txt `
      --title "sonos-driver vX.Y.Z" --generate-notes
    ```
 
 ## 4. Tag-driven release via GitHub Actions
 
 `.github/workflows/release.yml` automates §3 once CI billing is restored. On a pushed tag
-matching `v*` it: checks out, installs the stable Rust toolchain, runs
-`scripts/package.ps1`, uploads the zip as a build artifact, and (on tag pushes) publishes a
-GitHub Release with the archive attached via the `gh` CLI. It can also be triggered
-manually (`workflow_dispatch`) to produce the artifact without publishing a release. No
-third-party publishing action is used — only `gh` with the built-in `GITHUB_TOKEN` — to
-keep the release supply chain minimal.
+matching `v*` it first runs a **verify gate** — `cargo fmt --check`, `clippy -D warnings`,
+the workspace test suite, a release build, `cargo-deny`, and `cargo-audit` — and only if
+all are green does the package job run. That job builds both binaries, assembles the zip,
+installs the Inno Setup compiler (`choco install innosetup`), compiles the installer,
+computes a `SHA256SUMS.txt`, uploads all three as build artifacts, and (on tag pushes)
+publishes a GitHub Release with them attached via the `gh` CLI. It can also be triggered
+manually (`workflow_dispatch`) to produce the artifacts without publishing a release.
+
+Every third-party GitHub Action is pinned to a full commit SHA and `actions/checkout` runs
+with `persist-credentials: false`; no third-party publishing action is used — only `gh`
+with the built-in `GITHUB_TOKEN` — to keep the release supply chain minimal. See
+[ADR-0015](adr/0015-release-pipeline.md).
+
+> **Why GitHub Releases, not GitHub Packages?** GitHub Packages hosts package-registry
+> formats (npm, NuGet, Maven, containers); it has no channel for standalone Windows
+> executables. A versioned GitHub **Release** with attached artifacts is the idiomatic
+> distribution channel for this app.
 
 ## 5. Code signing (Authenticode) — honest status
 
-The released `sonos-driver.exe` is a **normal user-mode executable** and is currently
-shipped **unsigned**. Consequences and options:
+The released binaries (`sonos-driver.exe` and `sonos-driver-gui.exe`) are **normal
+user-mode executables** and are currently shipped **unsigned** — as is the installer.
+Consequences and options:
 
 - On first run, Microsoft **SmartScreen** / Defender may show an "unknown publisher"
   prompt. This is expected for an unsigned, low-reputation binary and does not indicate
@@ -106,8 +141,12 @@ Before announcing, sanity-check the archive on a clean path:
 
 ```powershell
 Expand-Archive dist\sonos-driver-X.Y.Z-x86_64-pc-windows-msvc.zip -DestinationPath $env:TEMP\sd-verify
-& "$env:TEMP\sd-verify\sonos-driver-X.Y.Z-x86_64-pc-windows-msvc\sonos-driver.exe" --version
+$dir = "$env:TEMP\sd-verify\sonos-driver-X.Y.Z-x86_64-pc-windows-msvc"
+& "$dir\sonos-driver.exe" --version        # CLI prints the version
+Start-Process "$dir\sonos-driver-gui.exe"  # GUI shows its tray icon — then close it
 ```
 
-Confirm the version matches the tag and that the README, CHANGELOG, both `LICENSE-*` files,
-and `sonos-driver.toml` are present in the extracted folder.
+Confirm the CLI version matches the tag and that both binaries, the README, CHANGELOG, both
+`LICENSE-*` files, and `sonos-driver.toml` are present in the extracted folder. If you built
+the installer, run it on a throwaway path/VM and confirm it installs both binaries and
+creates the Start-menu shortcut.

@@ -9,7 +9,7 @@
 use std::time::Duration;
 
 use audio_core::{Error, Result, SonosConfig};
-use sonos_control::{controller_for_room, discover, SonosController};
+use sonos_control::{controller_for_room, controller_for_uuid, SonosController};
 
 /// Discovery floor. [`SonosConfig::discovery_timeout_secs`] defaults to `0`,
 /// which would make an SSDP search return before any player could answer; three
@@ -82,13 +82,10 @@ pub(crate) fn resolve_target(config: &SonosConfig) -> Result<SonosController> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        let device = discover(timeout)?
-            .into_iter()
-            .find(|device| device.uuid == uuid)
-            .ok_or_else(|| {
-                Error::control(format!("no Sonos device with uuid '{uuid}' was found"))
-            })?;
-        return Ok(SonosController::new(device));
+        // A UUID may identify a non-coordinator member (e.g. one speaker of a
+        // stereo pair); resolve it to the group coordinator that accepts
+        // transport commands.
+        return controller_for_uuid(timeout, uuid);
     }
 
     if let Some(room) = config

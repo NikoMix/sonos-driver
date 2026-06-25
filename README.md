@@ -14,12 +14,13 @@ with selectable latency/quality profiles.
 
 ## Status
 
-**v0.1.0 — feature-complete pipeline.** The full capture → pipeline → encode →
-serve → control path is implemented across all eight crates and wired together by
-[`Bridge::run()`](crates/sonos-driver-core/src/lib.rs): user-mode WASAPI loopback
-capture, resample/convert/jitter pipeline, L16/WAV/FLAC encoders, a chunked HTTP
-stream server, and SSDP + UPnP Sonos discovery/control, all behind a complete `clap`
-CLI (`list` / `stream` / `stop` / `config`).
+**v0.2.0 — feature-complete pipeline, now with a desktop GUI.** The full capture →
+pipeline → encode → serve → control path is implemented across all nine crates and
+wired together by [`Bridge::run()`](crates/sonos-driver-core/src/lib.rs): user-mode
+WASAPI loopback capture, resample/convert/jitter pipeline, L16/WAV/FLAC encoders, a
+chunked HTTP stream server, and SSDP + UPnP Sonos discovery/control. Drive it from a
+complete `clap` CLI (`list` / `stream` / `stop` / `config`) **or** the new
+system-tray desktop app (`sonos-driver-gui`).
 
 Everything except the Windows audio hardware path is exercised by automated tests
 (including a hardware-free end-to-end latency harness). WASAPI loopback cannot run in
@@ -43,6 +44,9 @@ CI, so the capture path is verified with a
 - 📊 **Telemetry:** structured `tracing` logs plus live `frames-captured` /
   `frames-streamed` / `underruns` / `reconnects` metrics and a controllable-latency
   snapshot.
+- 🖥️ **System-tray desktop app** (`sonos-driver-gui`): pick a room, choose a profile, and
+  start/stop the bridge from a tray icon plus a settings/status window — the audio path
+  runs on a worker thread so the UI never blocks. The CLI remains fully supported.
 - 🛡️ **Permissive licensing only**, enforced by `cargo-deny`; zero known
   vulnerabilities, enforced by `cargo-audit`; `unsafe` confined to one audited WASAPI
   FFI island.
@@ -99,7 +103,15 @@ cargo build --release -p sonos-driver-cli
 That's it — start playing audio on your PC and it comes out of the Sonos. If discovery
 finds nothing, jump to [Troubleshooting](#troubleshooting).
 
-> Prefer a portable build with no Rust toolchain on the target machine? See
+Prefer a windowed experience? Launch the system-tray app instead of the CLI:
+
+```powershell
+cargo run --release -p sonos-driver-gui
+```
+
+> **Just want to run it?** Grab a prebuilt **portable zip** or **installer** from the
+> [Releases](https://github.com/NikoMix/sonos-driver/releases) page — no Rust toolchain
+> needed. To build a portable zip yourself, see
 > [Packaging a release](#packaging-a-release).
 
 ## Building
@@ -279,10 +291,28 @@ zip — no Rust toolchain needed on the target machine:
 pwsh -File scripts/package.ps1
 ```
 
-The zip bundles the `sonos-driver.exe` binary, `README.md`, both licence files, and an
-example `sonos-driver.toml`. Run `Get-Help scripts/package.ps1 -Detailed` for options
-(skip the build, change the output directory, etc.). The script must run from a shell
-with the MSVC environment initialised, just like a normal build.
+The zip bundles both binaries (`sonos-driver.exe` and `sonos-driver-gui.exe`),
+`README.md`, `CHANGELOG.md`, both licence files, and an example `sonos-driver.toml`. Run
+`Get-Help scripts/package.ps1 -Detailed` for options (skip the build, change the output
+directory, etc.). The script must run from a shell with the MSVC environment initialised,
+just like a normal build.
+
+### Building the installer
+
+[`scripts/build-installer.ps1`](scripts/build-installer.ps1) compiles a single-file
+Windows installer (`sonos-driver-<version>-x86_64-setup.exe`) from the **same payload** as
+the zip, using [Inno Setup](https://jrsoftware.org/isinfo.php) (free for commercial use, no
+paid licence):
+
+```powershell
+# Requires the Inno Setup compiler: choco install innosetup
+pwsh -File scripts/build-installer.ps1
+```
+
+If the Inno Setup compiler isn't installed, the script warns and skips the installer (the
+portable zip is unaffected). The release workflow installs it automatically and publishes
+the zip, the installer, and a `SHA256SUMS.txt` to the GitHub Release. See
+[ADR-0015](docs/adr/0015-release-pipeline.md) and [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Architecture
 
@@ -298,6 +328,7 @@ stream-server ─ chunked HTTP server (axum + broadcast ring buffer)
 sonos-control ─ SSDP discovery + UPnP AVTransport/RenderingControl SOAP
 sonos-driver-core ─ Bridge orchestration, session lifecycle, metrics, latency
 sonos-driver-cli ── clap command-line UX (list / stream / stop / config)
+sonos-driver-gui ── egui/eframe system-tray desktop app (settings / status / start-stop)
 ```
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the data flow and threading

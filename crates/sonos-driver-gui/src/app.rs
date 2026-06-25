@@ -52,8 +52,20 @@ impl GuiApp {
 
         let (actions_tx, actions_rx) = mpsc::channel();
         let path = config_io::default_config_path();
-        let config = config_io::load(&path).unwrap_or_default();
-        let state = AppState::new(path, config);
+        // A missing file is the normal first-run case: start from defaults
+        // silently. A file that exists but fails to parse is surfaced in the
+        // status line so the user notices before a save would overwrite it.
+        let (config, load_error) = match config_io::load(&path) {
+            Ok(config) => (config, None),
+            Err(_) if !path.exists() => (Config::default(), None),
+            Err(error) => (Config::default(), Some(error.to_string())),
+        };
+        let mut state = AppState::new(path, config);
+        if let Some(error) = load_error {
+            tracing::warn!(%error, "failed to load saved configuration; using defaults");
+            state.status_line =
+                format!("Failed to load config (using defaults — saving overwrites it): {error}");
+        }
 
         Self {
             state,

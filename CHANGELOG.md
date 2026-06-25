@@ -7,8 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-25
+
+Adds a desktop experience and hardens the streaming path, packaging, and release
+tooling on top of v0.1.0. The bridge remains pure-Rust and user-mode; the default
+capture → pipeline → encode → serve → control path is unchanged.
+
 ### Added
 
+- **System-tray desktop GUI** (`sonos-driver-gui`): an `egui`/`eframe` tray +
+  settings/status application that drives the existing public API of
+  `sonos-driver-core` and `audio-core` (no changes to those crates' behaviour).
+  The Bridge runs on its own worker thread, controlled via `StopHandle`, with a
+  live captured-frames counter pushed to the UI over a channel so the UI never
+  blocks on the audio path. Controller/state logic is split out and unit-tested
+  headlessly; the crate keeps `#![forbid(unsafe_code)]`. See
+  [ADR-0012](docs/adr/0012-gui-stack-and-threading.md).
 - **Per-application capture** (`audio-capture`): optional WASAPI *process
   loopback* that captures — or, inversely, *excludes* — a single application's
   audio tree instead of the whole render endpoint, selected by process name
@@ -24,6 +38,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `device`). All new `unsafe` stays inside the audited `audio_capture::wasapi`
   module; every other crate remains `#![forbid(unsafe_code)]`. See
   [ADR-0011](docs/adr/0011-process-loopback-capture.md).
+- **Codec `unsafe`-forbid parity and AAC re-evaluation** (`audio-codec`): the
+  codec crate is hardened in line with the rest of the workspace, and the
+  AAC/MP3 deferral is re-confirmed against the current licence-clean pure-Rust
+  ecosystem. See
+  [ADR-0013](docs/adr/0013-codec-hardening-and-aac-reeval.md).
+- **Driver-reality documentation and release engineering** clarifying why the
+  project ships as a user-mode bridge rather than a kernel virtual-audio device.
+  See [ADR-0014](docs/adr/0014-virtual-audio-driver-reality.md).
+- **Dual-binary packaging**: `scripts/package.ps1` now bundles **both**
+  `sonos-driver.exe` (CLI) and `sonos-driver-gui.exe` (tray GUI) into the
+  portable zip alongside the docs, both licences, and a generated example config.
+- **Windows installer**: `installer/sonos-driver.iss` plus
+  `scripts/build-installer.ps1` compile a single-file Inno Setup installer
+  (`sonos-driver-<version>-x86_64-setup.exe`) whose payload is expanded from the
+  portable zip, so the two artifacts are identical by construction. Inno Setup is
+  free for commercial use (no paid licence). See
+  [ADR-0015](docs/adr/0015-release-pipeline.md).
+- **Mature release pipeline**: `.github/workflows/release.yml` gates the
+  artifacts behind the full quality suite (fmt, clippy `-D warnings`, tests,
+  release build, `cargo-deny`, `cargo-audit`), then builds the zip and installer,
+  emits a `SHA256SUMS.txt`, and publishes a GitHub Release. See
+  [ADR-0015](docs/adr/0015-release-pipeline.md).
+
+### Changed
+
+- **L16 content type** now advertises `audio/L16;rate=44100;channels=2` (the
+  RFC 2586 rate/channels parameters) instead of a bare `audio/L16`, so players do
+  not fall back to the 8 kHz mono default and instead decode stereo at the
+  streamed sample rate.
+- **UPnP targeting** now resolves a UUID target to its zone-group coordinator
+  before binding (matching the existing room-name behaviour), so streaming to a
+  stereo pair or a grouped player routes transport commands correctly.
+- **Codec selection** is restricted and validated to the profiles that actually
+  ship an encoder (L16 PCM, WAV, FLAC) in both the GUI and the CLI; selecting AAC
+  or MP3 is now rejected up front with a clear error that references
+  [ADR-0004](docs/adr/0004-aac-mp3-codec-evaluation.md) instead of failing partway
+  into a session.
+- **Dependencies** refreshed to their latest compatible versions; the workspace
+  version is bumped to `0.2.0`.
+- **CI and release workflows** pin every third-party GitHub Action to a full
+  commit SHA and run `actions/checkout` with `persist-credentials: false`.
+
+### Fixed
+
+- The GUI no longer panics if the Bridge worker thread fails to spawn; the
+  failure is surfaced to the UI as a session-ended event.
+- The GUI now distinguishes a **missing** configuration (first run → silent
+  defaults) from a **malformed** one (surfaced in the status line), so a later
+  save can no longer silently overwrite an unreadable config file.
+
+### Security
+
+- **Permissive licences only**, enforced by `cargo-deny`; zero known advisories,
+  enforced by `cargo-audit`. The release pipeline runs both as merge gates and
+  pins its CI actions by commit SHA. The bridge still speaks only plain HTTP to
+  Sonos on the local network and has no cloud dependency.
 
 ## [0.1.0] - 2026-06-25
 
@@ -80,5 +150,6 @@ and wired together by `Bridge::run()`.
   enforced by `cargo-audit`. The bridge speaks only plain HTTP to Sonos on the local
   network and has no cloud dependency.
 
-[Unreleased]: https://github.com/NikoMix/sonos-driver/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/NikoMix/sonos-driver/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/NikoMix/sonos-driver/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/NikoMix/sonos-driver/releases/tag/v0.1.0

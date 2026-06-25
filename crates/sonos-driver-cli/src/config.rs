@@ -110,6 +110,12 @@ pub(crate) fn validate(config: &Config, require_target: bool) -> anyhow::Result<
             bail!("pipeline.target-sample-rate {rate} Hz is outside the supported 8000..=384000 Hz range");
         }
     }
+    if !config.stream.profile.has_encoder() {
+        bail!(
+            "stream.profile '{}' has no encoder yet (see ADR-0004); choose l16-pcm, wav or flac",
+            config.stream.profile.name()
+        );
+    }
     match config.capture.process.as_deref().map(str::trim) {
         Some("") => bail!(
             "capture.process must not be blank; remove it to capture the default render device"
