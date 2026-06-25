@@ -1,6 +1,6 @@
 # 0014 — Virtual audio "driver" reality: why this ships as a user-mode bridge
 
-- Status: Accepted
+- Status: Accepted (distribution conclusion stands; personal-use sub-case revisited and narrowed by [ADR-0017](./0017-kernel-virtual-audio-driver.md))
 - Date: 2026-06-25
 
 ## Context

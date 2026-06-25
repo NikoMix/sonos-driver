@@ -1,0 +1,73 @@
+; sonosvad.inf — installation manifest for the optional Sonos virtual-audio driver
+;
+; Derived from Microsoft's Sysvad sample INF (microsoft/Windows-driver-samples,
+; audio/sysvad), which is MIT-licensed. Preserve Microsoft's copyright/MIT notice
+; in any Sysvad-derived source per docs in driver/DERIVATION.md.
+;
+; OWNER-BUILT, TEST-SIGNED, PERSONAL USE ONLY. Not built or signed by CI.
+; See docs/DRIVER-SETUP.md and ADR-0017.
+;
+; NOTE: The GUIDs below are PLACEHOLDERS. Generate fresh ones with guidgen/uuidgen
+; before building; do NOT reuse the Sysvad sample GUIDs or these placeholders.
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = MEDIA
+ClassGuid   = {4d36e96c-e325-11ce-bfc1-08002be10318}
+Provider    = %ProviderName%
+CatalogFile = sonosvad.cat
+DriverVer   = ; set by stampinf during build
+PnpLockdown = 1
+
+[Manufacturer]
+%ManufacturerName% = SonosVad,NT$ARCH$.10.0...19041
+
+; -------------------------------------------------------------------------------
+[SonosVad.NT$ARCH$.10.0...19041]
+%SonosVad.DeviceDesc% = SonosVad_Install, Root\sonosvad
+
+; -------------------------------------------------------------------------------
+[SonosVad_Install.NT]
+CopyFiles = SonosVad_CopyFiles
+
+[SonosVad_CopyFiles]
+sonosvad.sys
+
+[SonosVad_Install.NT.HW]
+AddReg = SonosVad_AddReg
+
+[SonosVad_AddReg]
+; UPnP/endpoint friendly-name and routing metadata are populated at runtime by the
+; user-mode control interface (see driver/DERIVATION.md §4); none are hard-coded.
+
+[SonosVad_Install.NT.Services]
+AddService = sonosvad, 0x00000002, SonosVad_Service
+
+[SonosVad_Service]
+DisplayName   = %SonosVad.SvcDesc%
+ServiceType   = 1   ; SERVICE_KERNEL_DRIVER
+StartType     = 3   ; SERVICE_DEMAND_START
+ErrorControl  = 1   ; SERVICE_ERROR_NORMAL
+ServiceBinary = %13%\sonosvad.sys
+
+[SonosVad_Install.NT.Interfaces]
+; Render + paired loopback-capture interface references are added here once the
+; endpoint topology is finalised (DERIVATION.md §2-3).
+
+; -------------------------------------------------------------------------------
+[DestinationDirs]
+SonosVad_CopyFiles = 13   ; driver store
+
+[SourceDisksNames]
+1 = %DiskName%
+
+[SourceDisksFiles]
+sonosvad.sys = 1
+
+; -------------------------------------------------------------------------------
+[Strings]
+ProviderName         = "sonos-driver (personal/test)"
+ManufacturerName     = "sonos-driver"
+DiskName             = "sonos-driver virtual audio installation media"
+SonosVad.DeviceDesc  = "Sonos Virtual Audio Device (test)"
+SonosVad.SvcDesc     = "Sonos Virtual Audio Device service (test)"
