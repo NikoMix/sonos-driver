@@ -251,6 +251,25 @@ impl StreamServer {
         &self.stream_url
     }
 
+    /// The stream URL tailored for a specific peer (a Sonos player).
+    ///
+    /// When the server is bound to `0.0.0.0`, the advertised host is the local
+    /// interface that actually routes to `peer`, so the URL is reachable even on
+    /// a multi-homed host whose default route is not the speaker's subnet. A
+    /// concrete or loopback bind is honoured verbatim, exactly like [`url`]. The
+    /// port and path always match the running listener.
+    ///
+    /// [`url`]: Self::url
+    #[must_use]
+    pub fn stream_url_for(&self, peer: IpAddr) -> String {
+        let advertised = net::advertised_ip_for_peer(self.config.bind_address, peer);
+        let path = net::normalize_path(&self.config.path);
+        format!(
+            "http://{}{path}",
+            SocketAddr::new(advertised, self.local_addr.port())
+        )
+    }
+
     /// A snapshot of the live server telemetry counters.
     #[must_use]
     pub fn metrics(&self) -> ServerMetrics {
@@ -322,6 +341,16 @@ mod tests {
         );
         assert_eq!(Transport::content_type(&server), "audio/L16");
         assert_eq!(server.metrics(), ServerMetrics::default());
+    }
+
+    #[test]
+    fn stream_url_for_peer_honours_loopback_bind() {
+        // A loopback bind is operator intent for a local-only run, so the
+        // per-peer URL must stay loopback regardless of the peer address.
+        let server = StreamServer::start(loopback_config()).expect("server starts");
+        let port = server.local_addr().port();
+        let url = server.stream_url_for(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 9)));
+        assert_eq!(url, format!("http://127.0.0.1:{port}/stream"));
     }
 
     #[test]

@@ -6,6 +6,7 @@
 //! harness drive the full run loop with an in-process mock, with no Sonos on
 //! the LAN. See ADR-0007.
 
+use std::net::IpAddr;
 use std::time::Duration;
 
 use audio_core::{Error, Result, SonosConfig};
@@ -44,6 +45,17 @@ pub trait PlayerControl: Send {
     ///
     /// Returns an [`Error`] if the underlying control call fails.
     fn stop(&self) -> Result<()>;
+
+    /// The player's own LAN IP address, when known.
+    ///
+    /// The session uses this to advertise a stream URL on the local interface
+    /// that actually routes to *this* player — correct on multi-homed hosts.
+    /// Implementors with no addressable peer (such as the in-process test mock)
+    /// return `None`, and the session then falls back to the server's
+    /// default-resolved URL.
+    fn peer_ip(&self) -> Option<IpAddr> {
+        None
+    }
 }
 
 impl PlayerControl for SonosController {
@@ -59,6 +71,10 @@ impl PlayerControl for SonosController {
 
     fn stop(&self) -> Result<()> {
         SonosController::stop(self)
+    }
+
+    fn peer_ip(&self) -> Option<IpAddr> {
+        Some(IpAddr::V4(self.device().ip))
     }
 }
 
