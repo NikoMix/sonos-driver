@@ -105,6 +105,21 @@ windows = { version = "0.62", features = [
 # vtable/`IUnknownImpl` types stay identical. MIT/Apache-licensed.
 windows-core = { version = "0.62", default-features = true }
 
+# Desktop GUI stack for the `sonos-driver-gui` system-tray application (WS-J).
+# Every crate here is permissively licensed (MIT OR Apache-2.0) and cargo-deny
+# validated. `eframe` drives an immediate-mode `egui` UI on its bundled `winit`
+# Win32 event loop; the light `glow` (OpenGL) renderer is selected with
+# `default-features = false` to keep the `wgpu` graphics stack — and its larger
+# dependency/advisory surface — out of the tree. `tray-icon` + `muda` add the
+# Windows system-tray icon and context menu; their Linux-only `gtk`/`libxdo`
+# default features are disabled. `image` decodes the embedded PNG used for the
+# tray and window icons, with only the `png` codec enabled.
+egui = "0.34"
+eframe = { version = "0.34", default-features = false, features = ["default_fonts", "glow"] }
+tray-icon = { version = "0.24", default-features = false }
+muda = { version = "0.19", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png"] }
+
 # Centralised lint policy. Every member opts in with `[lints] workspace = true`.
 # CI promotes these warnings to hard errors (`-D warnings`), keeping the tree
 # clean with minimal supervision while surfacing code-smell telemetry early.

@@ -24,6 +24,21 @@ allow = [
     "MPL-2.0",
     "CC0-1.0",
 ]
+# Per-crate exceptions: these licenses are permissive / OSI-approved / FSF-libre
+# (no copyleft, no commercial restriction) but are not broad enough to add to the
+# global allow-list. Each is scoped to the single transitive crate that carries it
+# and is intrinsic to the GUI stack (eframe/egui 0.34):
+#   * clipboard-win / error-code (BSL-1.0, Boost): pulled by arboard, which
+#     egui-winit hard-codes via `features = ["clipboard"]` in eframe -- it cannot
+#     be disabled through Cargo features. BSL-1.0 is more permissive than MIT.
+#   * epaint_default_fonts (OFL-1.1 + Ubuntu-font-1.0): the bundled egui default
+#     fonts (`default_fonts` feature). Both are permissive open-font licenses that
+#     allow embedding and redistribution in software.
+exceptions = [
+    { allow = ["BSL-1.0"], crate = "clipboard-win" },
+    { allow = ["BSL-1.0"], crate = "error-code" },
+    { allow = ["OFL-1.1", "Ubuntu-font-1.0"], crate = "epaint_default_fonts" },
+]
 confidence-threshold = 0.9
 # The allow-list is intentionally forward-looking (FLAC and other audio deps
 # commonly add BSD/Zlib/ISC). Don't warn about entries no current dependency uses.
