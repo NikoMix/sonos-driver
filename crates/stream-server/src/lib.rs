@@ -325,7 +325,7 @@ mod tests {
         let cfg = ServerConfig::from_stream_config(&StreamConfig::default());
         assert_eq!(cfg.port, audio_core::DEFAULT_STREAM_PORT);
         assert_eq!(cfg.path, "/stream");
-        assert_eq!(cfg.content_type, "audio/L16");
+        assert_eq!(cfg.content_type, "audio/flac");
         assert_eq!(cfg.bind_address, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
         assert_eq!(cfg.channel_capacity, DEFAULT_CHANNEL_CAPACITY);
     }

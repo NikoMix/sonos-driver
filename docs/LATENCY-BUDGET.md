@@ -23,8 +23,11 @@ The lowest *achievable* network latency, by:
 
 1. **Minimising every millisecond we control** — event-driven WASAPI capture, a
    shallow jitter buffer, no unnecessary copies, and a no-compression hot path.
-2. **Offering uncompressed L16 PCM** as the default `low-latency` profile, which adds
-   essentially zero encode latency and lets the stream reach the Sonos buffer floor.
+2. **Offering uncompressed L16 PCM** as the `low-latency` profile, which adds
+   essentially zero encode latency and lets the stream reach the Sonos buffer floor
+   on renderers that accept it. (The shipped **default is `flac`** — the only profile
+   real Sonos players reliably accept over the live stream; see
+   [ADR-0016](adr/0016-default-profile-flac.md).)
 3. **Being explicit** about the trade-off so expectations are set correctly.
 
 ## Per-stage budget
@@ -45,9 +48,9 @@ outside our control.
 
 | Profile | Codec | Lossless | When to use |
 |---------|-------|----------|-------------|
-| `low-latency` | L16 PCM (`audio/L16`, big-endian, RFC 2586) | ✅ | Lowest latency; default. Highest bandwidth (~1.4 Mbps for CD stereo). |
+| `low-latency` | L16 PCM (`audio/L16`, big-endian, RFC 2586) | ✅ | Lowest latency; highest bandwidth (~1.4 Mbps for CD stereo). Many Sonos players reject raw L16 — see [ADR-0016](adr/0016-default-profile-flac.md). |
 | `wav` | RIFF/WAVE 16-bit PCM | ✅ | Same latency class as L16, broader player compatibility. |
-| `flac` | FLAC (pure-Rust encoder) | ✅ | Lossless with ~½ the bandwidth; small added encode latency. |
+| `flac` | FLAC (pure-Rust encoder) | ✅ | **Default.** Lossless with ~½ the bandwidth; the only profile real Sonos players reliably accept over the live stream. |
 | `aac` / `mp3` | lossy | ❌ | Maximum compatibility / lowest bandwidth; highest latency. |
 
 ## What "ultra-low-latency" means in this project

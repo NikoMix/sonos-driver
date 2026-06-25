@@ -40,7 +40,10 @@ impl LatencyClass {
 /// The set of streaming codecs the bridge can produce.
 ///
 /// Each profile pairs a wire codec with a [`LatencyClass`]. The default,
-/// [`CodecProfile::L16Pcm`], targets the lowest latency Sonos permits.
+/// [`CodecProfile::Flac`], is the most broadly compatible with Sonos players,
+/// which reject headerless `audio/L16` and live-edge `audio/wav` (see
+/// ADR-0016); [`CodecProfile::L16Pcm`] stays selectable for the lowest latency
+/// on renderers that accept it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CodecProfile {
@@ -57,10 +60,17 @@ pub enum CodecProfile {
 }
 
 impl CodecProfile {
-    /// The default profile: lowest achievable latency.
+    /// The default profile.
+    ///
+    /// [`CodecProfile::Flac`] is the default because it is the only profile
+    /// reliably playable on real Sonos hardware over the live-edge HTTP
+    /// broadcast: its frames are self-describing, so a player joining the
+    /// stream mid-flight can decode them without the one-time container header,
+    /// whereas raw `audio/L16` and live `audio/wav` are rejected (see
+    /// ADR-0016). It stays lossless at roughly half the bandwidth of PCM.
     #[must_use]
     pub const fn default_profile() -> Self {
-        Self::L16Pcm
+        Self::Flac
     }
 
     /// The MIME type advertised to Sonos for this profile.
@@ -185,9 +195,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_profile_is_lowest_latency() {
-        assert_eq!(CodecProfile::default(), CodecProfile::L16Pcm);
-        assert_eq!(CodecProfile::default().latency_class(), LatencyClass::Low);
+    fn default_profile_is_flac_for_sonos_compatibility() {
+        // FLAC is the default because it is the only profile reliably playable
+        // over the live-edge broadcast on real Sonos hardware (see ADR-0016).
+        assert_eq!(CodecProfile::default(), CodecProfile::Flac);
+        assert_eq!(
+            CodecProfile::default().latency_class(),
+            LatencyClass::Balanced
+        );
+        assert!(
+            CodecProfile::default().is_lossless(),
+            "the default must stay lossless"
+        );
+        assert!(
+            CodecProfile::default().has_encoder(),
+            "the default must have a shippable encoder"
+        );
     }
 
     #[test]

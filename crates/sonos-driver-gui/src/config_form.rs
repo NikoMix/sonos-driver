@@ -16,13 +16,14 @@ use audio_core::{
 };
 
 /// Every selectable [`CodecProfile`], in presentation order, for the picker.
+/// Leads with the default ([`CodecProfile::Flac`]).
 ///
 /// Only profiles with a shippable encoder are offered. AAC and MP3 have no
 /// licence-clean pure-Rust encoder (see ADR-0004) and would fail at start, so
 /// they are intentionally excluded; [`CodecProfile::has_encoder`] is the single
 /// source of truth and [`SettingsForm::to_config`] rejects any other profile.
 pub const ALL_PROFILES: [CodecProfile; 3] =
-    [CodecProfile::L16Pcm, CodecProfile::Wav, CodecProfile::Flac];
+    [CodecProfile::Flac, CodecProfile::Wav, CodecProfile::L16Pcm];
 
 /// The editable, string-backed mirror of [`Config`] bound to the settings UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -324,7 +325,8 @@ mod tests {
     #[test]
     fn all_profiles_have_encoders_and_lead_with_the_default() {
         assert_eq!(ALL_PROFILES.len(), 3);
-        assert_eq!(ALL_PROFILES[0], CodecProfile::L16Pcm);
+        assert_eq!(ALL_PROFILES[0], CodecProfile::default());
+        assert_eq!(ALL_PROFILES[0], CodecProfile::Flac);
         assert!(ALL_PROFILES.iter().all(|profile| profile.has_encoder()));
     }
 

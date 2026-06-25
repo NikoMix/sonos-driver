@@ -170,9 +170,10 @@ target-sample-rate = 44100
 buffer-ms = 80
 
 [stream]
-# Codec / latency profile: "l16-pcm" (lowest latency, default), "wav", "flac",
-# "aac" or "mp3". See `sonos-driver profiles` and docs/LATENCY-BUDGET.md.
-profile = "l16-pcm"
+# Codec / latency profile: "flac" (lossless, default — most compatible with
+# Sonos), "wav", "l16-pcm" (lowest latency), "aac" or "mp3". See
+# `sonos-driver profiles` and docs/LATENCY-BUDGET.md.
+profile = "flac"
 # Address the local HTTP stream server binds to. 0.0.0.0 exposes it on the LAN
 # so the Sonos player can reach it.
 bind-address = "0.0.0.0"
@@ -282,7 +283,7 @@ mod tests {
         assert_eq!(cfg.stream.port, 9100);
         assert_eq!(cfg.sonos.uuid.as_deref(), Some("RINCON_ABC"));
         // Untouched fields keep their defaults.
-        assert_eq!(cfg.stream.profile, CodecProfile::L16Pcm);
+        assert_eq!(cfg.stream.profile, CodecProfile::Flac);
     }
 
     #[test]
@@ -411,7 +412,7 @@ mod tests {
         // The shipped example is itself a valid standalone config.
         assert!(validate(&cfg, false).is_ok());
         // Active values match the documented defaults; targets stay unset.
-        assert_eq!(cfg.stream.profile, CodecProfile::L16Pcm);
+        assert_eq!(cfg.stream.profile, CodecProfile::Flac);
         assert_eq!(cfg.stream.port, 8080);
         assert_eq!(cfg.stream.bind_address, "0.0.0.0");
         assert_eq!(cfg.pipeline.target_sample_rate, Some(44_100));

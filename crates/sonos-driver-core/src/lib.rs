@@ -262,9 +262,9 @@ mod tests {
     fn latency_estimate_tracks_profile() {
         let bridge = Bridge::new(Config::default());
         let est = bridge.latency_estimate();
-        assert_eq!(est.profile, CodecProfile::L16Pcm);
-        assert_eq!(est.class, LatencyClass::Low);
-        assert_eq!(est.approx_range, "~350-850 ms");
+        assert_eq!(est.profile, CodecProfile::Flac);
+        assert_eq!(est.class, LatencyClass::Balanced);
+        assert_eq!(est.approx_range, "~400-1000 ms");
     }
 
     #[test]

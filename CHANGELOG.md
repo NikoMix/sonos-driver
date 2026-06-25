@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Default streaming profile is now FLAC** (`audio-core`). The bridge previously
+  defaulted to raw L16 PCM, which real Sonos players reject ("unable to play
+  'stream' — the file is in an unsupported format"); RIFF/WAVE PCM is likewise
+  rejected ("the song is not encoded correctly"). The HTTP stream server fans
+  audio out at the *live edge*, so the one-time container header never reaches a
+  player that joins the running stream — only FLAC works there, because its
+  frames are self-describing and a decoder can resync mid-stream. FLAC is now the
+  default for both the CLI and the GUI; it is lossless at roughly half the
+  bandwidth of PCM. `l16-pcm` (lowest latency) and `wav` remain selectable for
+  renderers that accept them. See
+  [ADR-0016](docs/adr/0016-default-profile-flac.md).
+  ([#42](https://github.com/NikoMix/sonos-driver/issues/42))
+
 ### Fixed
 
 - **Multi-homed room discovery** (`sonos-control`): SSDP `M-SEARCH` discovery now
