@@ -1,0 +1,52 @@
+# `sonos-driver-gui` (WS-J): a Windows system-tray + settings/status desktop
+# application that drives the existing public API of `sonos-driver-core` and
+# `audio-core`. The crate is split into a headless, unit-tested library
+# (`sonos_driver_gui`) and a thin rendering binary (`sonos-driver-gui`).
+[package]
+name = "sonos-driver-gui"
+description = "System-tray desktop GUI for the sonos-driver Windows -> Sonos audio bridge."
+# The GUI stack (eframe 0.34) is edition-2024 and requires rustc 1.92, so this
+# member overrides the workspace MSRV floor of 1.90 while inheriting every other
+# package field. The pinned toolchain (stable) is newer than both.
+rust-version = "1.92"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords = ["sonos", "audio", "gui", "tray", "windows"]
+categories = ["multimedia::audio", "gui"]
+
+[lints]
+workspace = true
+
+[lib]
+name = "sonos_driver_gui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sonos-driver-gui"
+path = "src/main.rs"
+
+[dependencies]
+# Drives the existing bridge orchestration + audio configuration contracts.
+sonos-driver-core.workspace = true
+audio-core.workspace = true
+# Render-endpoint enumeration for the capture-device picker (binary only). The
+# public `enumerate_render_endpoints()` initialises COM itself, so it is called
+# from a worker thread; on non-Windows it returns an error handled gracefully.
+audio-capture.workspace = true
+
+# Configuration persistence + structured diagnostics (existing workspace deps).
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Desktop GUI stack (see the root `[workspace.dependencies]` for the rationale
+# behind the disabled default features).
+egui.workspace = true
+eframe.workspace = true
+tray-icon.workspace = true
+muda.workspace = true
+image.workspace = true
