@@ -23,6 +23,7 @@ supersedes the old one (and update the old one's status to "Superseded by ADR-N"
 - [0013 — Codec `unsafe`-forbid parity, AAC re-evaluation, and the `audio-core` name collision](./0013-codec-hardening-and-aac-reeval.md)
 - [0014 — Virtual audio "driver" reality: why this ships as a user-mode bridge](./0014-virtual-audio-driver-reality.md)
 - [0015 — Release pipeline: dual-binary portable zip + Inno Setup installer, gated GitHub Actions release](./0015-release-pipeline.md)
+- [0016 — Default streaming profile is FLAC (Sonos rejects live L16/WAV)](./0016-default-profile-flac.md)
 
 ## Template
 

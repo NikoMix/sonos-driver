@@ -107,9 +107,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_are_low_latency_and_lan_exposed() {
+    fn defaults_are_sonos_compatible_and_lan_exposed() {
         let cfg = Config::default();
-        assert_eq!(cfg.stream.profile, CodecProfile::L16Pcm);
+        assert_eq!(cfg.stream.profile, CodecProfile::Flac);
         assert_eq!(cfg.stream.port, DEFAULT_STREAM_PORT);
         assert_eq!(cfg.stream.bind_address, "0.0.0.0");
         assert_eq!(cfg.pipeline.target_sample_rate, Some(44_100));

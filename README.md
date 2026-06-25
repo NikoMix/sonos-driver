@@ -36,7 +36,8 @@ CI, so the capture path is verified with a
 - 📡 **Sonos discovery & control** over SSDP + UPnP SOAP (`SetAVTransportURI` / `Play` /
   `Stop`, volume, and zone-group topology so a stereo pair or group is driven by its
   coordinator).
-- 🔀 **Selectable lossless profiles:** `low-latency` (L16 PCM), `wav`, and `flac` — all
+- 🔀 **Selectable lossless profiles:** `flac` (default — the format real Sonos players
+  reliably accept over the live stream), `wav`, and `low-latency` (L16 PCM) — all
   pure-Rust. (`aac`/`mp3` are reserved but **not** implemented; see
   [Profiles](#profiles).)
 - 🧩 **Modular crates** built on stable `audio-core` trait contracts — most of the system
@@ -74,9 +75,9 @@ Available streaming profiles (latency includes the fixed Sonos buffer):
 
 | Profile | CLI name | Codec | Status |
 |---------|----------|-------|--------|
-| `L16Pcm` | `low-latency` | Big-endian 16-bit PCM (`audio/L16`, RFC 2586) | ✅ Implemented — default, lowest latency |
+| `L16Pcm` | `low-latency` | Big-endian 16-bit PCM (`audio/L16`, RFC 2586) | ✅ Implemented — lowest latency (many Sonos players reject it; see [ADR-0016](docs/adr/0016-default-profile-flac.md)) |
 | `Wav` | `wav` | RIFF/WAVE 16-bit PCM (`audio/wav`) | ✅ Implemented — lossless, broad compatibility |
-| `Flac` | `flac` | FLAC lossless (`audio/flac`, pure-Rust `flacenc`) | ✅ Implemented — ~½ the bandwidth |
+| `Flac` | `flac` | FLAC lossless (`audio/flac`, pure-Rust `flacenc`) | ✅ Implemented — **default**, ~½ the bandwidth, best Sonos compatibility |
 | `Aac` | `aac` | AAC | ⛔ Not implemented — no licence-clean pure-Rust encoder ([ADR-0004](docs/adr/0004-aac-mp3-codec-evaluation.md)) |
 | `Mp3` | `mp3` | MP3 | ⛔ Not implemented — same as AAC |
 
@@ -248,9 +249,10 @@ target-sample-rate = 44100
 buffer-ms = 80
 
 [stream]
-# Codec / latency profile: "l16-pcm" (lowest latency, default), "wav", "flac",
-# "aac" or "mp3". See `sonos-driver profiles` and docs/LATENCY-BUDGET.md.
-profile = "l16-pcm"
+# Codec / latency profile: "flac" (lossless, default — most compatible with
+# Sonos), "wav", "l16-pcm" (lowest latency), "aac" or "mp3". See
+# `sonos-driver profiles` and docs/LATENCY-BUDGET.md.
+profile = "flac"
 # Address the local HTTP stream server binds to. 0.0.0.0 exposes it on the LAN
 # so the Sonos player can reach it.
 bind-address = "0.0.0.0"
