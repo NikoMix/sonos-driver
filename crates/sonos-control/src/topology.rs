@@ -45,6 +45,14 @@ impl ZoneGroup {
             .iter()
             .any(|m| m.zone_name.eq_ignore_ascii_case(room))
     }
+
+    /// Whether any member's UUID matches `uuid` (case-insensitive).
+    #[must_use]
+    pub fn contains_uuid(&self, uuid: &str) -> bool {
+        self.members
+            .iter()
+            .any(|m| m.uuid.eq_ignore_ascii_case(uuid))
+    }
 }
 
 /// One player within a [`ZoneGroup`].
@@ -77,6 +85,23 @@ pub fn find_room_coordinator<'a>(
     groups
         .iter()
         .find(|g| g.contains_room(room))
+        .and_then(ZoneGroup::coordinator)
+}
+
+/// Find the coordinator that drives the group containing the member `uuid`.
+///
+/// A device UUID can identify a *non*-coordinator member — for example the
+/// secondary speaker of a bonded stereo pair — which silently ignores transport
+/// commands. Transport control must target the group's coordinator regardless of
+/// which member's UUID the user configured.
+#[must_use]
+pub fn find_uuid_coordinator<'a>(
+    groups: &'a [ZoneGroup],
+    uuid: &str,
+) -> Option<&'a ZoneGroupMember> {
+    groups
+        .iter()
+        .find(|g| g.contains_uuid(uuid))
         .and_then(ZoneGroup::coordinator)
 }
 
@@ -206,6 +231,29 @@ mod tests {
     }
 
     #[test]
+    fn resolves_member_uuid_to_group_coordinator() {
+        let groups = parse_zone_group_state(STATE).expect("parse");
+        // RINCON_BBB01400 is the secondary member of the Living Room pair; its
+        // transport commands must be routed to the coordinator (AAA).
+        let coord = find_uuid_coordinator(&groups, "RINCON_BBB01400").expect("coordinator");
+        assert_eq!(coord.uuid, "RINCON_AAA01400");
+        assert_eq!(coord.ip(), Some(Ipv4Addr::new(192, 168, 1, 50)));
+    }
+
+    #[test]
+    fn resolves_coordinator_uuid_to_itself() {
+        let groups = parse_zone_group_state(STATE).expect("parse");
+        let coord = find_uuid_coordinator(&groups, "rincon_ccc01400").expect("coordinator");
+        assert_eq!(coord.uuid, "RINCON_CCC01400");
+    }
+
+    #[test]
+    fn unknown_uuid_resolves_to_none() {
+        let groups = parse_zone_group_state(STATE).expect("parse");
+        assert!(find_uuid_coordinator(&groups, "RINCON_ZZZ01400").is_none());
+    }
+
+    #[test]
     fn parses_bare_zone_groups_form() {
         let bare = r#"<ZoneGroups><ZoneGroup Coordinator="RINCON_X" ID="RINCON_X:1">
             <ZoneGroupMember UUID="RINCON_X" ZoneName="Den"
@@ -219,7 +267,7 @@ mod tests {
     #[test]
     fn fetch_zone_groups_round_trips_get_zone_group_state() {
         use std::io::{Read, Write};
-        use std::net::TcpListener;
+        use std::net::{Shutdown, TcpListener};
         use std::thread;
 
         // A realistic GetZoneGroupState response: the ZoneGroupState out-argument
@@ -245,6 +293,14 @@ mod tests {
             let _ = stream.read(&mut buf);
             stream.write_all(response.as_bytes()).expect("write");
             stream.flush().expect("flush");
+            // Close gracefully: signal end-of-response with a FIN, then wait for
+            // the client to finish reading and close. Without this the thread
+            // could drop the socket while the client is still reading the
+            // `Connection: close` body, sending an RST that surfaces as WSA
+            // 10054 (ConnectionReset) and intermittently fails the client read
+            // under parallel test load on Windows.
+            let _ = stream.shutdown(Shutdown::Write);
+            let _ = stream.read(&mut buf);
         });
 
         let url = format!("http://{addr}/ZoneGroupTopology/Control");

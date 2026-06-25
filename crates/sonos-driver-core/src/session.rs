@@ -61,7 +61,7 @@ pub(crate) fn run_session(
     // Build the encoder first: an unsupported profile must fail before we bind a
     // socket or contact the player.
     let encoder = audio_codec::encoder_for(config.stream.profile, output_format)?;
-    let content_type = encoder.content_type().to_owned();
+    let content_type = encoder.content_type().into_owned();
 
     // Start the HTTP stream server; it resolves the LAN-reachable URL itself.
     let mut server_config = ServerConfig::from_stream_config(&config.stream);

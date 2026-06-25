@@ -1,6 +1,8 @@
 //! Codec abstractions: [`CodecProfile`], [`LatencyClass`] and the [`Encoder`]
 //! trait implemented by the concrete encoders in the `audio-codec` crate.
 
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{AudioFrame, Result};
@@ -89,6 +91,17 @@ impl CodecProfile {
         matches!(self, Self::L16Pcm | Self::Wav | Self::Flac)
     }
 
+    /// Whether a licence-clean pure-Rust encoder is available for this profile.
+    ///
+    /// `false` for [`CodecProfile::Aac`] and [`CodecProfile::Mp3`], which have no
+    /// shippable encoder (see ADR-0004). Selecting an unimplemented profile is a
+    /// configuration error the bridge rejects up front rather than failing mid
+    /// session; `audio_codec::encoder_for` is the runtime backstop.
+    #[must_use]
+    pub const fn has_encoder(self) -> bool {
+        matches!(self, Self::L16Pcm | Self::Wav | Self::Flac)
+    }
+
     /// A short description suitable for CLI help and logs.
     #[must_use]
     pub const fn description(self) -> &'static str {
@@ -98,6 +111,19 @@ impl CodecProfile {
             Self::Flac => "FLAC lossless compression — quality with moderate latency",
             Self::Aac => "AAC lossy compression — compatibility, higher latency",
             Self::Mp3 => "MP3 lossy compression — compatibility, higher latency",
+        }
+    }
+
+    /// The stable lower-case identifier used in config files, the CLI and log
+    /// messages, e.g. `"l16-pcm"`. Matches the `serde` kebab-case rename.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::L16Pcm => "l16-pcm",
+            Self::Wav => "wav",
+            Self::Flac => "flac",
+            Self::Aac => "aac",
+            Self::Mp3 => "mp3",
         }
     }
 }
@@ -125,9 +151,16 @@ pub trait Encoder: Send {
     /// The profile this encoder implements.
     fn profile(&self) -> CodecProfile;
 
-    /// MIME type to advertise to the player (defaults to the profile's).
-    fn content_type(&self) -> &'static str {
-        self.profile().content_type()
+    /// MIME type to advertise to the player.
+    ///
+    /// Defaults to the profile's nominal MIME type. Header-less wire formats —
+    /// notably raw `audio/L16` (RFC 2586), whose byte stream carries no in-band
+    /// sample rate or channel count — override this to append the `rate` and
+    /// `channels` parameters the player needs to interpret the stream correctly,
+    /// returning an owned value via [`Cow::Owned`]. Container formats (WAV, FLAC)
+    /// carry this information in-band and keep the borrowed default.
+    fn content_type(&self) -> Cow<'static, str> {
+        Cow::Borrowed(self.profile().content_type())
     }
 
     /// Container/stream header bytes emitted once before the first frame.
@@ -161,6 +194,21 @@ mod tests {
     fn lossless_classification_is_correct() {
         assert!(CodecProfile::Flac.is_lossless());
         assert!(!CodecProfile::Aac.is_lossless());
+    }
+
+    #[test]
+    fn has_encoder_is_true_only_for_shippable_profiles() {
+        assert!(CodecProfile::L16Pcm.has_encoder());
+        assert!(CodecProfile::Wav.has_encoder());
+        assert!(CodecProfile::Flac.has_encoder());
+        assert!(!CodecProfile::Aac.has_encoder());
+        assert!(!CodecProfile::Mp3.has_encoder());
+    }
+
+    #[test]
+    fn name_matches_serde_kebab_case() {
+        assert_eq!(CodecProfile::L16Pcm.name(), "l16-pcm");
+        assert_eq!(CodecProfile::Mp3.name(), "mp3");
     }
 
     #[test]

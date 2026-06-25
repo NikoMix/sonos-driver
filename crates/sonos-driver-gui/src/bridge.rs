@@ -20,7 +20,7 @@ use std::time::Duration;
 use audio_core::{
     AudioFormat, AudioFrame, AudioSource, CaptureConfig, Config, Error, Result, SonosConfig,
 };
-use sonos_driver_core::control::{controller_for_room, discover, SonosController};
+use sonos_driver_core::control::{controller_for_room, controller_for_uuid, SonosController};
 use sonos_driver_core::{Bridge, ControllableLatency, StopHandle};
 
 use crate::metrics::{LiveCounter, MetricsSnapshot};
@@ -111,9 +111,9 @@ pub struct BridgeSupervisor {
 impl BridgeSupervisor {
     /// Spawn a worker that runs a [`Bridge`] for `config`.
     ///
-    /// # Panics
-    ///
-    /// Panics only if the operating system refuses to create the worker thread.
+    /// If the operating system refuses to create the worker thread, the failure
+    /// is reported as an ordinary [`BridgeEvent::Ended`] terminal event (with no
+    /// running handle) rather than panicking, so the UI returns cleanly to idle.
     #[must_use]
     pub fn spawn(config: Config) -> Self {
         let (sender, events) = mpsc::channel();
@@ -121,6 +121,7 @@ impl BridgeSupervisor {
         let bridge = Bridge::new(config);
         let stop = bridge.stop_handle();
         let worker_live = live.clone();
+        let sender_on_error = sender.clone();
         let handle = thread::Builder::new()
             .name("sonos-bridge".to_owned())
             .spawn(move || {
@@ -128,12 +129,24 @@ impl BridgeSupervisor {
                 // Always report a terminal event, even on a resolution failure.
                 let _ = sender.send(BridgeEvent::Ended(outcome));
             })
-            .expect("failed to spawn the bridge worker thread");
+            .map_or_else(
+                |error| {
+                    // The OS refused a new thread: report it as an ordinary
+                    // terminal event so the UI returns to idle instead of the
+                    // whole process aborting on a panic.
+                    let outcome = SessionOutcome::failed(&Error::transport(format!(
+                        "failed to spawn the bridge worker thread: {error}"
+                    )));
+                    let _ = sender_on_error.send(BridgeEvent::Ended(outcome));
+                    None
+                },
+                Some,
+            );
         Self {
             stop,
             live,
             events,
-            handle: Some(handle),
+            handle,
         }
     }
 
@@ -230,13 +243,11 @@ fn resolve_controller(config: &SonosConfig) -> Result<SonosController> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        let device = discover(timeout)?
-            .into_iter()
-            .find(|device| device.uuid == uuid)
-            .ok_or_else(|| {
-                Error::control(format!("no Sonos device with uuid '{uuid}' was found"))
-            })?;
-        return Ok(SonosController::new(device));
+        // Resolve the UUID to its group coordinator: the GUI sets both `room`
+        // and `uuid` when a room is picked, and a UUID can point at a
+        // non-coordinator member (e.g. one half of a stereo pair) that ignores
+        // transport commands.
+        return controller_for_uuid(timeout, uuid);
     }
 
     if let Some(room) = config

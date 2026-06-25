@@ -67,7 +67,7 @@ mod tests {
     fn returns_encoder_for_flac_profile() {
         let enc = encoder_for(CodecProfile::Flac, AudioFormat::cd_stereo()).expect("flac encoder");
         assert_eq!(enc.profile(), CodecProfile::Flac);
-        assert_eq!(enc.content_type(), "audio/flac");
+        assert_eq!(enc.content_type().as_ref(), "audio/flac");
     }
 
     #[test]

@@ -153,9 +153,9 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "audio-capture"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "audio-core 0.1.0",
+ "audio-core 0.2.0",
  "tracing",
  "windows",
  "windows-core",
@@ -163,9 +163,9 @@ dependencies = [
 
 [[package]]
 name = "audio-codec"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "audio-core 0.1.0",
+ "audio-core 0.2.0",
  "claxon",
  "flacenc",
  "thiserror 2.0.18",
@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "audio-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -189,9 +189,9 @@ checksum = "f93ebbf82d06013f4c41fe71303feb980cddd78496d904d06be627972de51a24"
 
 [[package]]
 name = "audio-pipeline"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "audio-core 0.1.0",
+ "audio-core 0.2.0",
  "audioadapter-buffers",
  "rubato",
  "tracing",
@@ -2729,9 +2729,9 @@ dependencies = [
 
 [[package]]
 name = "sonos-control"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "audio-core 0.1.0",
+ "audio-core 0.2.0",
  "quick-xml 0.40.1",
  "serde",
  "socket2",
@@ -2740,7 +2740,7 @@ dependencies = [
 
 [[package]]
 name = "sonos-driver-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2755,11 +2755,11 @@ dependencies = [
 
 [[package]]
 name = "sonos-driver-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "audio-capture",
  "audio-codec",
- "audio-core 0.1.0",
+ "audio-core 0.2.0",
  "audio-pipeline",
  "sonos-control",
  "stream-server",
@@ -2768,10 +2768,10 @@ dependencies = [
 
 [[package]]
 name = "sonos-driver-gui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "audio-capture",
- "audio-core 0.1.0",
+ "audio-core 0.2.0",
  "eframe",
  "egui",
  "image",
@@ -2797,9 +2797,9 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "stream-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "audio-core 0.1.0",
+ "audio-core 0.2.0",
  "axum",
  "bytes",
  "tokio",

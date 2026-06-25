@@ -232,7 +232,10 @@ fn streaming_loop_publishes_audio_until_stopped() {
     );
     let (authority, path) = split_url(&url);
     let (mut reader, content_type) = open_stream(&authority, &path);
-    assert_eq!(content_type, "audio/L16");
+    // L16 is header-less (RFC 2586): the MIME type must carry the output rate
+    // and channel count so the player interprets the stream correctly. The
+    // 48 kHz source is resampled to the 44.1 kHz harness output, stereo.
+    assert_eq!(content_type, "audio/L16;rate=44100;channels=2");
 
     let mut total = 0_usize;
     while total < MIN_BODY_BYTES {
@@ -264,7 +267,9 @@ fn streaming_loop_publishes_audio_until_stopped() {
     assert!(calls.set_uri >= 1, "player was never pointed at the stream");
     assert!(calls.play >= 1, "player was never started");
     assert!(calls.stop >= 1, "player was never stopped on teardown");
-    assert_eq!(calls.last_content_type, "audio/L16");
+    // The same corrected MIME flows into the DIDL-Lite protocolInfo the player
+    // is handed, so Sonos sees the rate/channels for the header-less L16 stream.
+    assert_eq!(calls.last_content_type, "audio/L16;rate=44100;channels=2");
 }
 
 #[test]
