@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Multi-homed room discovery** (`sonos-control`): SSDP `M-SEARCH` discovery now
+  sends from every usable local IPv4 interface, explicitly selecting each as the
+  multicast egress interface (`IP_MULTICAST_IF`), instead of relying on the OS
+  default route. On hosts with more than one active network — Ethernet *and*
+  Wi-Fi, or virtual adapters from Hyper-V/WSL/Docker/VPNs (common on Windows) —
+  the default route is frequently not the speakers' network, so "Discover rooms"
+  silently returned nothing. Discovery now fans out across all interfaces (with
+  the default route kept as a safety net) and de-duplicates replies. The unicast
+  path used by the integration tests is unchanged. ([#38](https://github.com/NikoMix/sonos-driver/issues/38))
+
 ## [0.2.0] - 2026-06-25
 
 Adds a desktop experience and hardens the streaming path, packaging, and release

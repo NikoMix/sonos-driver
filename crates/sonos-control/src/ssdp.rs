@@ -5,14 +5,25 @@
 //! carries a `LOCATION` pointing at the player's device-description XML, which
 //! the caller fetches to build a [`crate::SonosDevice`].
 //!
-//! The socket is *configured* with [`socket2`] (so `SO_REUSEADDR` and the
-//! multicast TTL can be set) and then converted into a [`std::net::UdpSocket`]
-//! for all sends and receives. That keeps every byte-level operation in safe
-//! `std` code, preserving the crate-wide `#![forbid(unsafe_code)]`.
+//! On a multi-homed host (Ethernet *and* Wi-Fi, or virtual adapters from
+//! Hyper-V/WSL/Docker/VPNs — the common case on Windows) the OS would otherwise
+//! send the multicast `M-SEARCH` out only the default-route interface, which is
+//! frequently *not* the one the speakers are on, so discovery silently finds no
+//! rooms. To avoid that, a multicast search enumerates the local IPv4 interfaces
+//! with [`if_addrs`] and sends from every one, explicitly selecting each as the
+//! multicast egress interface. An explicit *unicast* destination keeps the
+//! single-socket path (used by the loopback integration tests).
+//!
+//! The socket is *configured* with [`socket2`] (so `SO_REUSEADDR`, the multicast
+//! TTL and the egress interface can be set) and then converted into a
+//! [`std::net::UdpSocket`] for all sends and receives. That keeps every
+//! byte-level operation in safe `std` code, preserving the crate-wide
+//! `#![forbid(unsafe_code)]`.
 
 use std::collections::HashSet;
 use std::io::ErrorKind;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use audio_core::{Error, Result};
@@ -106,13 +117,27 @@ impl SsdpSearch {
 
     /// Run the search, collecting de-duplicated responses until `timeout`.
     ///
+    /// A multicast destination (the default) is sent from every usable local
+    /// IPv4 interface so multi-homed hosts are covered; an explicit unicast
+    /// destination uses a single socket.
+    ///
     /// # Errors
     ///
-    /// Returns an [`Error`] if the UDP socket cannot be created/bound or a send
-    /// fails. Per-datagram receive timeouts are expected and not treated as
-    /// errors.
+    /// Returns an [`Error`] if no UDP socket can be created/bound. On the unicast
+    /// path a send failure is also propagated; on the multicast path a send
+    /// failure on one interface is logged and tolerated. Per-datagram receive
+    /// timeouts are expected and never treated as errors.
     pub fn search(&self, timeout: Duration) -> Result<Vec<SsdpResponse>> {
-        let udp = self.open_socket()?;
+        if self.destination.ip().is_multicast() {
+            self.search_multicast(timeout)
+        } else {
+            self.search_unicast(timeout)
+        }
+    }
+
+    /// Search a single (unicast) destination from one default-bound socket.
+    fn search_unicast(&self, timeout: Duration) -> Result<Vec<SsdpResponse>> {
+        let udp = Self::open_unicast_socket()?;
         let destination = SocketAddr::V4(self.destination);
         let msearch = build_msearch(self.destination, &self.search_target, self.mx);
         for _ in 0..self.bursts {
@@ -132,12 +157,7 @@ impl SsdpSearch {
             match udp.recv_from(&mut buf) {
                 Ok((n, _src)) => {
                     if let Some(resp) = parse_msearch_response(&buf[..n]) {
-                        let key = if resp.usn.is_empty() {
-                            resp.location.clone()
-                        } else {
-                            resp.usn.clone()
-                        };
-                        if seen.insert(key) {
+                        if seen.insert(dedup_key(&resp)) {
                             tracing::debug!(location = %resp.location, "ssdp response");
                             responses.push(resp);
                         }
@@ -150,16 +170,130 @@ impl SsdpSearch {
         Ok(responses)
     }
 
-    fn open_socket(&self) -> Result<UdpSocket> {
+    /// Search the multicast group from every usable local IPv4 interface.
+    fn search_multicast(&self, timeout: Duration) -> Result<Vec<SsdpResponse>> {
+        let sockets = self.open_multicast_sockets()?;
+        let destination = SocketAddr::V4(self.destination);
+        let msearch = build_msearch(self.destination, &self.search_target, self.mx);
+        for socket in &sockets {
+            for _ in 0..self.bursts {
+                // A send failure on one interface (e.g. a down or unsuitable
+                // adapter) must not abort discovery on the others.
+                if let Err(err) = socket.send_to(msearch.as_bytes(), destination) {
+                    tracing::debug!(%err, "ssdp M-SEARCH send failed on an interface");
+                }
+            }
+        }
+
+        let deadline = Instant::now() + timeout;
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut responses = Vec::new();
+        let mut buf = [0u8; 2048];
+        // Sockets are non-blocking; poll each in turn until the deadline, napping
+        // briefly whenever a full pass found nothing so we never busy-spin.
+        while Instant::now() < deadline {
+            let mut idle = true;
+            for socket in &sockets {
+                loop {
+                    match socket.recv_from(&mut buf) {
+                        Ok((n, _src)) => {
+                            idle = false;
+                            if let Some(resp) = parse_msearch_response(&buf[..n]) {
+                                if seen.insert(dedup_key(&resp)) {
+                                    tracing::debug!(location = %resp.location, "ssdp response");
+                                    responses.push(resp);
+                                }
+                            }
+                        }
+                        Err(e)
+                            if e.kind() == ErrorKind::WouldBlock
+                                || e.kind() == ErrorKind::TimedOut =>
+                        {
+                            break;
+                        }
+                        Err(e) => {
+                            tracing::debug!(error = %e, "ssdp recv error on an interface");
+                            break;
+                        }
+                    }
+                }
+            }
+            if idle {
+                let nap = Duration::from_millis(20)
+                    .min(deadline.saturating_duration_since(Instant::now()));
+                if nap.is_zero() {
+                    break;
+                }
+                sleep(nap);
+            }
+        }
+        Ok(responses)
+    }
+
+    /// Open the single default-route socket used for a unicast search.
+    fn open_unicast_socket() -> Result<UdpSocket> {
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
         socket.set_reuse_address(true)?;
         let bind: SocketAddr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0));
         socket.bind(&bind.into())?;
-        let udp: UdpSocket = socket.into();
-        if self.destination.ip().is_multicast() {
-            udp.set_multicast_ttl_v4(u32::from(self.multicast_ttl))?;
-            udp.set_multicast_loop_v4(true)?;
+        Ok(socket.into())
+    }
+
+    /// Open one multicast-configured socket per usable local IPv4 interface.
+    ///
+    /// Each socket is bound to its interface address and has that interface set
+    /// as the multicast egress (`IP_MULTICAST_IF`), so the `M-SEARCH` reaches
+    /// every network the host is attached to rather than only the default route.
+    /// An unspecified-address socket is always appended as a final safety net (and
+    /// is the sole socket when interface enumeration yields nothing).
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] only if *no* socket — not even the unspecified
+    /// fallback — could be opened.
+    fn open_multicast_sockets(&self) -> Result<Vec<UdpSocket>> {
+        let mut sockets = Vec::new();
+        let mut handled: HashSet<Ipv4Addr> = HashSet::new();
+        for iface in interface_ipv4_addrs() {
+            if !handled.insert(iface) {
+                continue;
+            }
+            match self.open_multicast_socket_on(iface) {
+                Ok(socket) => sockets.push(socket),
+                Err(err) => {
+                    tracing::debug!(%iface, %err, "skipping interface for SSDP discovery");
+                }
+            }
         }
+        match self.open_multicast_socket_on(Ipv4Addr::UNSPECIFIED) {
+            Ok(socket) => sockets.push(socket),
+            Err(err) if sockets.is_empty() => return Err(err),
+            Err(err) => tracing::debug!(%err, "default-route SSDP socket unavailable"),
+        }
+        Ok(sockets)
+    }
+
+    /// Open and configure one non-blocking multicast socket bound to `iface`.
+    ///
+    /// `iface` may be [`Ipv4Addr::UNSPECIFIED`] for the OS default route, in which
+    /// case no explicit egress interface is selected.
+    fn open_multicast_socket_on(&self, iface: Ipv4Addr) -> Result<UdpSocket> {
+        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+        socket.set_reuse_address(true)?;
+        socket.set_multicast_ttl_v4(u32::from(self.multicast_ttl))?;
+        socket.set_multicast_loop_v4(true)?;
+        if !iface.is_unspecified() {
+            // Best effort: pick this interface for multicast egress. If the OS
+            // rejects it (rare), the interface-address bind below still steers
+            // most stacks to the right adapter.
+            if let Err(err) = socket.set_multicast_if_v4(&iface) {
+                tracing::debug!(%iface, %err, "could not set multicast egress interface");
+            }
+        }
+        let bind: SocketAddr = SocketAddr::from((iface, 0));
+        socket.bind(&bind.into())?;
+        let udp: UdpSocket = socket.into();
+        udp.set_nonblocking(true)?;
         Ok(udp)
     }
 }
@@ -205,6 +339,38 @@ pub(crate) fn parse_msearch_response(buf: &[u8]) -> Option<SsdpResponse> {
     })
 }
 
+/// Enumerate the host's usable IPv4 interface addresses for multicast discovery.
+///
+/// Loopback is excluded (Sonos never lives there). Enumeration failure is logged
+/// and yields an empty list, so the caller still falls back to the OS default
+/// route via the unspecified-address socket.
+fn interface_ipv4_addrs() -> Vec<Ipv4Addr> {
+    match if_addrs::get_if_addrs() {
+        Ok(ifaces) => ifaces
+            .into_iter()
+            .filter(|iface| !iface.is_loopback())
+            .filter_map(|iface| match iface.ip() {
+                IpAddr::V4(addr) => Some(addr),
+                IpAddr::V6(_) => None,
+            })
+            .collect(),
+        Err(err) => {
+            tracing::warn!(%err, "could not enumerate network interfaces for SSDP discovery");
+            Vec::new()
+        }
+    }
+}
+
+/// The de-duplication key for a response: its `USN`, or the `LOCATION` when the
+/// responder omitted a `USN`.
+fn dedup_key(resp: &SsdpResponse) -> String {
+    if resp.usn.is_empty() {
+        resp.location.clone()
+    } else {
+        resp.usn.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,5 +403,50 @@ mod tests {
     fn rejects_response_without_location() {
         let raw = b"HTTP/1.1 200 OK\r\nUSN: uuid:RINCON_1\r\n\r\n";
         assert!(parse_msearch_response(raw).is_none());
+    }
+
+    #[test]
+    fn dedup_key_prefers_usn_then_location() {
+        let with_usn = SsdpResponse {
+            location: "http://10.0.0.5:1400/xml/device_description.xml".to_owned(),
+            usn: "uuid:RINCON_ABC::urn".to_owned(),
+            server: None,
+            search_target: None,
+        };
+        assert_eq!(dedup_key(&with_usn), "uuid:RINCON_ABC::urn");
+
+        let without_usn = SsdpResponse {
+            location: "http://10.0.0.6:1400/xml/device_description.xml".to_owned(),
+            usn: String::new(),
+            server: None,
+            search_target: None,
+        };
+        assert_eq!(
+            dedup_key(&without_usn),
+            "http://10.0.0.6:1400/xml/device_description.xml"
+        );
+    }
+
+    #[test]
+    fn interface_enumeration_excludes_loopback() {
+        // Hermetic: only asserts a property of whatever the host reports — never
+        // that any particular interface exists.
+        for addr in interface_ipv4_addrs() {
+            assert!(
+                !addr.is_loopback(),
+                "loopback address {addr} must not be returned"
+            );
+        }
+    }
+
+    #[test]
+    fn multicast_search_opens_at_least_the_default_route() {
+        // Even on a host with no enumerable interfaces, the unspecified-address
+        // safety-net socket must always be opened.
+        let search = SsdpSearch::new();
+        let sockets = search
+            .open_multicast_sockets()
+            .expect("at least the default-route socket should open");
+        assert!(!sockets.is_empty());
     }
 }
