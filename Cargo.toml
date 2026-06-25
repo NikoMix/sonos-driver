@@ -75,8 +75,13 @@ bytes = "1"
 # is then converted to `std::net::UdpSocket` so all recv/send stays in safe code
 # under `#![forbid(unsafe_code)]`. `quick-xml` (+ serde) parses the device
 # description and zone-group topology. No TLS: Sonos LAN control is plain HTTP.
+# `if-addrs` enumerates local IPv4 interfaces so the SSDP M-SEARCH is sent on
+# every network the host is attached to (multi-homed Windows hosts otherwise send
+# discovery out only the default-route adapter and find no rooms). It adds no new
+# transitive crates (libc/windows-sys are already present) and is MIT/BSD-3.
 socket2 = "0.6"
 quick-xml = { version = "0.40", features = ["serialize"] }
+if-addrs = "0.15"
 
 # Windows API bindings for WASAPI loopback capture (WS-A, `audio-capture` only).
 # Pinned to the latest release and locked by Cargo.lock; MIT/Apache-licensed.

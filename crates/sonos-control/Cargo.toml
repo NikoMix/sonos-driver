@@ -13,6 +13,7 @@ audio-core.workspace = true
 tracing.workspace = true
 socket2.workspace = true
 quick-xml.workspace = true
+if-addrs.workspace = true
 serde = { workspace = true }
 
 [lints]
