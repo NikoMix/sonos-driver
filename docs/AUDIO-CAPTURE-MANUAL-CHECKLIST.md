@@ -3,9 +3,10 @@
 WASAPI loopback capture touches live Core Audio COM interfaces and real output
 devices, so it **cannot run in CI** (GitHub-hosted runners have no audio
 endpoint, and the loopback engine never raises buffer events without a render
-device). The pure logic — device matching ([`device`]) and sample→`f32`
-conversion ([`format`]) — is covered by automated unit tests; the FFI path below
-is verified by hand on a Windows host before each release that touches this crate.
+device). The pure logic — device matching ([`device`]), sample→`f32` conversion
+([`format`]), and process-name→PID resolution plus the build-20348 OS gate
+([`process`]) — is covered by automated unit tests; the FFI path below is
+verified by hand on a Windows host before each release that touches this crate.
 
 Run every section on a real Windows 10/11 machine with at least one active render
 endpoint. Record the date, Windows build, and crate commit with the results.
@@ -108,7 +109,39 @@ While a capture is running and being read:
 - [ ] Open → capture → drop in a loop (≥ 20 iterations) leaks no handles/threads
       (watch Task Manager / handle count stays flat).
 
-## 9. Unsafe confinement (per release)
+## 9. Per-application capture (process loopback)
+
+Requires **Windows 11 / Windows Server 2022 (build 20348+)**. Drive a
+`LoopbackCapture` from a `CaptureConfig` with `process: Some(...)` (leave
+`device` unset). Use a known audio app (e.g. a browser tab or media player) as
+the target. Confirm the host build first (`[Environment]::OSVersion` or
+`winver`).
+
+- [ ] **Capture by name.** `process: Some("<app>.exe")`, `exclude_process: false`
+      → `LoopbackCapture::open` succeeds; with the target playing, `read()`
+      returns `Some(frame)` with non-zero `f32` samples in `[-1.0, 1.0]`.
+- [ ] **Only the target is heard.** Audio from *other* apps does **not** appear in
+      the captured samples (play a second app and confirm it is absent).
+- [ ] **`format()`** reports `SampleFormat::F32`, 48 kHz, stereo (the explicit
+      process-loopback format — `GetMixFormat` is not used).
+- [ ] **Capture by PID.** `process: Some("<pid>")` for the target's PID behaves
+      identically; a PID that is not running fails fast with a clear
+      `Error::Capture` naming the missing process.
+- [ ] **Exclude mode.** `process: Some("<app>.exe")`, `exclude_process: true` →
+      the captured stream contains everything **except** that app's audio tree
+      (play the target plus another app; only the other app is present).
+- [ ] **Target silence.** While the target app is open but not playing, `read()`
+      keeps returning frames at/near `0.0` without stalling; resuming playback
+      returns non-zero samples within a few buffers.
+- [ ] **Target exit.** Closing the target app ends the stream gracefully
+      (`read()` eventually returns `None`), never a panic or hang.
+- [ ] **OS gate.** On a pre-20348 host (or simulated), `LoopbackCapture::open`
+      with a `process` returns a clear `Error::Capture` mentioning the minimum
+      build — not a panic and not an opaque `E_NOTIMPL`.
+- [ ] **Selected mode is logged.** With `-v`, the bridge logs the chosen capture
+      mode (`process-loopback-include` / `process-loopback-exclude`).
+
+## 10. Unsafe confinement (per release)
 
 - [ ] `cargo geiger -p audio-capture` (if installed) shows `unsafe` usage **only**
       inside `audio_capture::wasapi`; `device`, `format`, `capture`, and `lib`
@@ -125,3 +158,4 @@ While a capture is running and being read:
 
 [`device`]: ../crates/audio-capture/src/device.rs
 [`format`]: ../crates/audio-capture/src/format.rs
+[`process`]: ../crates/audio-capture/src/process.rs

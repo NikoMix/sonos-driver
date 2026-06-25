@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Per-application capture** (`audio-capture`): optional WASAPI *process
+  loopback* that captures — or, inversely, *excludes* — a single application's
+  audio tree instead of the whole render endpoint, selected by process name
+  (`"spotify.exe"`, the `.exe` is optional) or numeric PID. Still pure user-mode
+  (no kernel driver), brought up via `ActivateAudioInterfaceAsync` on the
+  process-loopback virtual device and drained by the same pump/decode path as the
+  default-device loopback. Requires Windows 11 / Windows Server 2022 (build
+  20348+); older builds fail fast with a clear typed error via a runtime OS gate.
+  The classic default-device loopback remains the default. New
+  `capture.process` / `capture.exclude-process` config fields and
+  `--process <name|pid>` / `--exclude-process` CLI flags (precedence:
+  flags > file > defaults; a configured `process` takes precedence over
+  `device`). All new `unsafe` stays inside the audited `audio_capture::wasapi`
+  module; every other crate remains `#![forbid(unsafe_code)]`. See
+  [ADR-0011](docs/adr/0011-process-loopback-capture.md).
+
 ## [0.1.0] - 2026-06-25
 
 First feature-complete release of the pure-Rust, user-mode Windows → Sonos audio

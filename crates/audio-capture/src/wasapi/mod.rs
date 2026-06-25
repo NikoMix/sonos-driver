@@ -19,10 +19,15 @@ use audio_core::{Error, Result};
 
 use crate::capture::{CaptureItem, LoopbackCapture, SharedState, CHANNEL_CAPACITY};
 use crate::device::{self, EndpointInfo};
+use crate::process;
 
 mod com;
 mod endpoint;
 mod keepalive;
+mod osinfo;
+mod process_loopback;
+mod processes;
+mod pump;
 mod session;
 
 /// `AUDCLNT_BUFFERFLAGS_SILENT`: the captured/rendered buffer is (to be treated
@@ -107,4 +112,64 @@ pub(crate) fn open_capture(selector: Option<&str>) -> Result<LoopbackCapture> {
         shared,
         vec![capture_handle, keepalive_handle],
     ))
+}
+
+/// Open a per-application process-loopback capture session.
+///
+/// `target` is a process id or image name (resolved against a live toolhelp
+/// snapshot); `exclude` flips capture from "only this process tree" to
+/// "everything except this process tree". The host OS build is gated up front —
+/// process loopback needs Windows 11 / Server 2022 (build 20348+) — returning a
+/// clear typed [`Error`] on older systems rather than failing opaquely in the FFI.
+///
+/// Unlike the default-device path there is no keep-alive renderer (we capture a
+/// specific app, and silence while it is idle is expected) and no reconnect loop
+/// (a single app has a single session), so only one worker thread is spawned.
+pub(crate) fn open_process_capture(target: &str, exclude: bool) -> Result<LoopbackCapture> {
+    let build = osinfo::current_os_build().ok_or_else(|| {
+        Error::capture("unable to determine the Windows build for the process-loopback gate")
+    })?;
+    if !process::meets_min_build(build) {
+        return Err(Error::capture(format!(
+            "per-application loopback requires Windows 11 / Server 2022 (build {min}+); \
+             this host reports build {build}",
+            min = process::MIN_PROCESS_LOOPBACK_BUILD
+        )));
+    }
+
+    // Resolve the target on the calling thread so a bad name/pid fails synchronously.
+    let selector = process::parse_selector(target)?;
+    let snapshot = processes::enumerate_processes()?;
+    let pid = process::resolve_pid(&selector, &snapshot)?;
+    let mode = process::ProcessLoopbackMode::from_exclude(exclude);
+
+    let format = process_loopback::reported_format()?;
+    let shared = Arc::new(SharedState::new(format));
+    let (tx, rx) = sync_channel::<CaptureItem>(CHANNEL_CAPACITY);
+
+    {
+        let live = shared.format();
+        tracing::info!(
+            target,
+            pid,
+            exclude,
+            sample_rate = live.sample_rate,
+            channels = live.channels,
+            "opened WASAPI process-loopback capture"
+        );
+    }
+
+    let worker_shared = Arc::clone(&shared);
+    let worker_tx = tx.clone();
+    let worker_handle = thread::Builder::new()
+        .name("wasapi-process-loopback".to_owned())
+        .spawn(move || {
+            process_loopback::run_process_capture(pid, mode, &worker_shared, &worker_tx);
+        })
+        .map_err(|e| Error::capture(format!("failed to spawn process-loopback thread: {e}")))?;
+
+    // Drop our sender so the receiver observes a disconnect once the worker exits.
+    drop(tx);
+
+    Ok(LoopbackCapture::from_parts(rx, shared, vec![worker_handle]))
 }

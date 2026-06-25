@@ -83,17 +83,27 @@ quick-xml = { version = "0.40", features = ["serialize"] }
 # Only the Win32 sub-namespaces the capture path needs are enabled to keep build
 # times and the API surface tight.
 windows = { version = "0.62", features = [
+    "Wdk_System_SystemServices",
+    "Win32_Devices_FunctionDiscovery",
     "Win32_Foundation",
     "Win32_Media_Audio",
     "Win32_Media_KernelStreaming",
     "Win32_Security",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_System_Variant",
     "Win32_UI_Shell_PropertiesSystem",
-    "Win32_Devices_FunctionDiscovery",
 ] }
+
+# Core windows-rs runtime (COM `IUnknown`, `Interface`, `#[implement]` support).
+# Re-exported by the umbrella `windows` crate above, but also referenced directly
+# so the `#[implement]` macro's generated `::windows_core` paths resolve. Pinned
+# to the exact same release as `windows` so Cargo unifies the two and the COM
+# vtable/`IUnknownImpl` types stay identical. MIT/Apache-licensed.
+windows-core = { version = "0.62", default-features = true }
 
 # Centralised lint policy. Every member opts in with `[lints] workspace = true`.
 # CI promotes these warnings to hard errors (`-D warnings`), keeping the tree
