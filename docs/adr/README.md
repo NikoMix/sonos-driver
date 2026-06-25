@@ -24,6 +24,7 @@ supersedes the old one (and update the old one's status to "Superseded by ADR-N"
 - [0014 — Virtual audio "driver" reality: why this ships as a user-mode bridge](./0014-virtual-audio-driver-reality.md)
 - [0015 — Release pipeline: dual-binary portable zip + Inno Setup installer, gated GitHub Actions release](./0015-release-pipeline.md)
 - [0016 — Default streaming profile is FLAC (Sonos rejects live L16/WAV)](./0016-default-profile-flac.md)
+- [0017 — Kernel virtual-audio driver: a scoped, personal-use revisit of ADR-0014](./0017-kernel-virtual-audio-driver.md)
 
 ## Template
 

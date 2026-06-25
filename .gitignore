@@ -4,6 +4,10 @@
 **/*.rs.bk
 *.pdb
 
+# Optional kernel-driver build/sign scratch (owner-built, never committed)
+/driver/_local/
+/driver/src/
+
 # Cargo
 # Cargo.lock IS committed (this workspace produces binaries).
 

@@ -1,0 +1,23 @@
+# User-mode control plane for the optional kernel virtual-audio driver (ADR-0017).
+# Deliberately free of kernel, FFI, and OS-specific code so it builds and unit-
+# tests on any platform and keeps the workspace `#![forbid(unsafe_code)]` rule.
+[package]
+name = "sonos-vad-control"
+description = "User-mode control plane for the optional Sonos virtual-audio driver: a room-to-endpoint registry, the kernel-to-user control protocol, and a reconcile planner that converges Windows render endpoints to the set of discovered Sonos rooms."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

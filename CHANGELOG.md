@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Foundation for an optional kernel virtual-audio driver** that would enumerate
+  **each Sonos room as its own Windows output device** (personal-use, free
+  test-signed; the user-mode bridge remains the default product). This phase lands
+  the verifiable, pure-Rust pieces only:
+  - New `sonos-vad-control` crate — the OS-independent user-mode control plane for
+    the future driver: a `RoomKey`/`device_name_for` room-identity and
+    device-naming model, the `serde`-serialisable `ControlCommand`/`DriverEvent`
+    message contract, and an `EndpointRegistry` reconcile planner that converges
+    live render endpoints to the discovered rooms (idempotent; create/destroy with
+    retry-on-failure). 15 unit tests + 2 doctests, `#![forbid(unsafe_code)]`, no
+    new third-party dependencies.
+  - [ADR-0017](docs/adr/0017-kernel-virtual-audio-driver.md) — architecture,
+    polyglot boundary, kernel→user PCM bridge, and the test-signing decision,
+    framed as a scoped, personal-use revisit of ADR-0014 (whose distribution
+    conclusion stands).
+  - `docs/DRIVER-SETUP.md` — owner runbook for enabling test-signing, building the
+    WDK driver, creating a test certificate, and installing/uninstalling.
+  - `driver/` scaffold (owner-built, **not** CI-built): INF, derivation guide, and
+    PowerShell helper scripts. The kernel driver itself cannot be compiled, signed,
+    or installed in CI — it requires the full WDK and a reboot for test-signing.
+    ([#44](https://github.com/NikoMix/sonos-driver/issues/44),
+    [#45](https://github.com/NikoMix/sonos-driver/issues/45))
+
 ### Changed
 
 - **Default streaming profile is now FLAC** (`audio-core`). The bridge previously
