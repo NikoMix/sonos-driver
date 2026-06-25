@@ -67,7 +67,11 @@ pub(crate) fn run_session(
     let mut server_config = ServerConfig::from_stream_config(&config.stream);
     server_config.content_type.clone_from(&content_type);
     let mut server = StreamServer::start(server_config)?;
-    let stream_url = server.url().to_owned();
+    // Advertise the stream on the local interface that actually routes to this
+    // player. On a multi-homed host (Wi-Fi + Ethernet, or virtual adapters) the
+    // default route is frequently not the speaker's subnet, so a single
+    // default-resolved URL would be unreachable and playback would be silent.
+    let stream_url = resolve_stream_url(&server, control.as_ref());
 
     tracing::info!(%stream_url, %content_type, output_rate, "bridge session starting");
 
@@ -97,7 +101,14 @@ pub(crate) fn run_session(
     }
 
     // Supervise until a stop is requested or the encode loop ends on its own.
-    supervise(&server, &handle, control.as_ref(), stop, metrics);
+    supervise(
+        &server,
+        &handle,
+        control.as_ref(),
+        &stream_url,
+        stop,
+        metrics,
+    );
 
     // Graceful teardown: stop the loop, join it, stop the player, stop the
     // server. The worker's own result is the session's result.
@@ -121,6 +132,18 @@ fn start_playback(control: &dyn PlayerControl, stream_url: &str, content_type: &
     control.play()
 }
 
+/// Resolve the stream URL to advertise to the player.
+///
+/// When the player exposes its own LAN address, the URL is tailored to the local
+/// interface that routes to it (multi-homed-correct); otherwise the server's
+/// default-resolved URL is used (e.g. the loopback test harness).
+fn resolve_stream_url(server: &StreamServer, control: &dyn PlayerControl) -> String {
+    control.peer_ip().map_or_else(
+        || server.url().to_owned(),
+        |peer| server.stream_url_for(peer),
+    )
+}
+
 /// Poll until a stop is requested or the encode thread finishes, re-pointing the
 /// player if a previously connected client drops away for long enough.
 ///
@@ -131,13 +154,13 @@ fn supervise(
     server: &StreamServer,
     handle: &thread::JoinHandle<Result<()>>,
     control: &dyn PlayerControl,
+    stream_url: &str,
     stop: &Arc<AtomicBool>,
     metrics: &Arc<SharedMetrics>,
 ) {
     const POLL: Duration = Duration::from_millis(50);
     const RECONNECT_DEBOUNCE: Duration = Duration::from_millis(750);
 
-    let stream_url = server.url().to_owned();
     let content_type = server.config().content_type.clone();
     let mut seen_client = false;
     let mut dropped_at: Option<Instant> = None;
@@ -158,7 +181,7 @@ fn supervise(
         match dropped_at {
             None => dropped_at = Some(Instant::now()),
             Some(since) if since.elapsed() >= RECONNECT_DEBOUNCE => {
-                match start_playback(control, &stream_url, &content_type) {
+                match start_playback(control, stream_url, &content_type) {
                     Ok(()) => {
                         metrics.inc_reconnects();
                         tracing::info!("re-pointed the player after a client drop");

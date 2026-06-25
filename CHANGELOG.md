@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   silently returned nothing. Discovery now fans out across all interfaces (with
   the default route kept as a safety net) and de-duplicates replies. The unicast
   path used by the integration tests is unchanged. ([#38](https://github.com/NikoMix/sonos-driver/issues/38))
+- **Multi-homed streaming playback** (`stream-server`, `sonos-driver-core`): the
+  HTTP stream URL advertised to a Sonos player is now resolved *per target* — the
+  bridge picks the local interface that actually routes to *that* speaker instead
+  of resolving the OS default-route IP once at startup. On a multi-homed host
+  whose Sonos sits on a different NIC than the default route, the speaker was
+  handed an unreachable URL: `SetAVTransportURI`/`Play` still succeeded (so no
+  error surfaced), but the speaker could never fetch the stream — it stayed
+  silent with no transport activity. `StreamServer::stream_url_for(peer)` and a
+  defaulted `PlayerControl::peer_ip()` thread the speaker's own IP through both
+  the initial play and reconnect; loopback/integration paths advertise verbatim
+  and are unchanged. ([#40](https://github.com/NikoMix/sonos-driver/issues/40))
 
 ## [0.2.0] - 2026-06-25
 
