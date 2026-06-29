@@ -53,7 +53,7 @@ serde_json = "1"
 # `audioadapter` graph (rubato 3.x requires the `^3.0` adapters). Both are
 # permissively licensed (MIT / MIT OR Apache-2.0) and cargo-deny validated.
 rubato = "3"
-audioadapter-buffers = "3"
+audioadapter-buffers = "4"
 
 # Audio codecs. `flacenc` is the pure-Rust FLAC encoder (Apache-2.0); default
 # features (log/par/serde) are disabled so the per-frame streaming path stays
