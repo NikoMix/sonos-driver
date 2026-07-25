@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use audio_core::Config;
-use sonos_driver_core::vad_endpoint::SystemEndpoints;
+use sonos_driver_core::vad_endpoint::{PlanOptions, SystemEndpoints};
 use sonos_driver_core::{discover_rooms, MultiRoomBridge, RoomSession, StopHandle};
 
 /// How long to wait before retrying after a failed startup attempt.
@@ -38,6 +38,8 @@ pub(crate) struct WorkerSettings {
     /// sound picker: the driver ships a fixed pool of slots and the user should
     /// see their rooms, not "Sonos Output 7".
     pub hide_spare_endpoints: bool,
+    /// Expose the aggregate "All Sonos" output alongside the per-room ones.
+    pub all_sonos_endpoint: bool,
 }
 
 impl Default for WorkerSettings {
@@ -47,6 +49,7 @@ impl Default for WorkerSettings {
             seed_host: None,
             discovery_timeout: Duration::from_secs(5),
             hide_spare_endpoints: true,
+            all_sonos_endpoint: true,
         }
     }
 }
@@ -125,6 +128,11 @@ fn run_once(settings: &WorkerSettings, stop: &StopHandle) -> anyhow::Result<()> 
         discover_rooms(seed, settings.discovery_timeout).context("discovering Sonos rooms")?;
     tracing::info!(rooms = rooms.len(), "discovered rooms");
 
+    // A previous run that was killed mid-party left the household grouped.
+    // Split it before planning, so the service always starts from the
+    // topology the user configured rather than inheriting one it made.
+    recover_stale_group(seed, settings.discovery_timeout);
+
     let mut supervisor = MultiRoomBridge::new(config);
     // Adopt the caller's stop flag so a SCM stop reaches the bridges.
     supervisor.adopt_stop_handle(stop);
@@ -133,7 +141,10 @@ fn run_once(settings: &WorkerSettings, stop: &StopHandle) -> anyhow::Result<()> 
         .plan_with(
             &SystemEndpoints::new(),
             &rooms,
-            settings.hide_spare_endpoints,
+            PlanOptions {
+                hide_spares: settings.hide_spare_endpoints,
+                aggregate: settings.all_sonos_endpoint,
+            },
         )
         .context("planning per-room sessions")?;
 
@@ -146,6 +157,27 @@ fn run_once(settings: &WorkerSettings, stop: &StopHandle) -> anyhow::Result<()> 
         .run_sessions(&sessions)
         .context("running the multi-room bridge")?;
     Ok(())
+}
+
+/// Undo an "All Sonos" group left behind by a run that never got to stop
+/// cleanly.
+///
+/// Best-effort by design: failing to split a stale group is a reason to log and
+/// carry on, not a reason to refuse to stream. The aggregate output re-forms
+/// the party by itself the moment anything plays to it.
+fn recover_stale_group(seed: Option<&str>, timeout: Duration) {
+    let journal = sonos_driver_core::party::default_journal_path();
+    #[allow(clippy::cast_possible_truncation)]
+    let secs = timeout.as_secs().min(u64::from(u32::MAX)) as u32;
+    match sonos_driver_core::disband(&journal, seed, secs) {
+        Ok(0) => {}
+        Ok(released) => {
+            tracing::info!(released, "split rooms left grouped by a previous run");
+        }
+        Err(error) => {
+            tracing::warn!(%error, "could not split rooms left grouped by a previous run");
+        }
+    }
 }
 
 fn load_config(settings: &WorkerSettings) -> anyhow::Result<Config> {

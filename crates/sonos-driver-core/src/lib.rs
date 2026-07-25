@@ -21,16 +21,21 @@ pub use audio_pipeline as pipeline;
 pub use sonos_control as control;
 pub use stream_server as server;
 
+mod arbiter;
+mod group;
 mod idle;
 mod latency;
 mod metrics;
 mod multiroom;
+pub mod party;
 mod player;
 mod rooms;
 mod session;
 
+pub use arbiter::{Arbiter, Arbitration, SessionId};
+pub use group::{disband, GroupPlayer};
 pub use latency::ControllableLatency;
-pub use multiroom::{sessions_for, MultiRoomBridge, RoomSession};
+pub use multiroom::{sessions_for, sessions_for_all, MultiRoomBridge, RoomSession, SessionTarget};
 pub use player::PlayerControl;
 pub use rooms::{discover_rooms, is_non_coordinator, rooms_from_topology};
 pub use sonos_vad_control as vad;
@@ -151,6 +156,9 @@ pub struct Bridge {
     metrics: Arc<SharedMetrics>,
     latency: Arc<LatencyAccumulator>,
     stop: Arc<AtomicBool>,
+    /// This session's stake in the shared room-ownership map, when it is one of
+    /// several sessions competing for the same speakers.
+    arbitration: Option<Arbitration>,
 }
 
 impl Bridge {
@@ -162,6 +170,7 @@ impl Bridge {
             metrics: Arc::new(SharedMetrics::default()),
             latency: Arc::new(LatencyAccumulator::default()),
             stop: Arc::new(AtomicBool::new(false)),
+            arbitration: None,
         }
     }
 
@@ -260,7 +269,18 @@ impl Bridge {
             &self.stop,
             &self.metrics,
             &self.latency,
+            self.arbitration.as_ref(),
         )
+    }
+
+    /// Make this bridge compete for `rooms` through `arbiter`.
+    ///
+    /// Without this the bridge assumes it owns its target outright, which is
+    /// correct for a single standalone session. The multi-room supervisor sets
+    /// it on every session so the "All Sonos" output and the per-room outputs
+    /// can hand speakers back and forth. See [`Arbiter`].
+    pub fn arbitrate(&mut self, arbiter: Arc<Arbiter>, session: SessionId, rooms: Vec<String>) {
+        self.arbitration = Some(Arbitration::new(arbiter, session, rooms));
     }
 }
 

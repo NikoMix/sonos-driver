@@ -47,7 +47,10 @@ DEFINE_GUIDSTRUCT("146BA61C-BA04-4EB8-9B5E-FA0EFC09A046", PID_SONOSVAD);
 // Number of virtual render endpoints exposed by the driver.
 // MUST match the endpoint list in Filters\minipairs.h and the interface
 // sections in sonosvad.inx.
-#define SONOSVAD_ENDPOINT_COUNT     8
+//
+// Eight are bound to individual Sonos rooms; the ninth is reserved for the
+// "All Sonos" aggregate output, so adding it did not cost a room slot.
+#define SONOSVAD_ENDPOINT_COUNT     9
 
 // Pool tag used for SONOSVAD allocations
 #define SONOSVAD_POOLTAG               'davS'  

@@ -33,14 +33,35 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use audio_core::{Config, Error, Result};
-use sonos_vad_endpoint::{Binding, SystemEndpoints, VadEndpoints};
+use sonos_vad_endpoint::{AggregateBinding, Binding, PlanOptions, SystemEndpoints, VadEndpoints};
 
-use crate::{Bridge, StopHandle};
+use crate::{Arbiter, Bridge, SessionId, StopHandle};
 
-/// One planned per-room streaming session.
+/// What a session's audio is sent to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionTarget {
+    /// One Sonos room, identified by its zone-group coordinator UUID.
+    Room {
+        /// Stable UUID of the room's coordinator.
+        uuid: String,
+    },
+    /// Every room at once, played as one synchronised Sonos group.
+    ///
+    /// Carries all room UUIDs in binding order; the first coordinates the
+    /// group. See [`crate::GroupPlayer`] for why grouping is used instead of
+    /// streaming to each room in parallel.
+    AllRooms {
+        /// Every room's coordinator UUID, coordinator of the party first.
+        uuids: Vec<String>,
+    },
+}
+
+/// One planned streaming session: one Windows endpoint, one Sonos target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoomSession {
     /// Stable UUID of the Sonos room this session streams to.
+    ///
+    /// For the aggregate session this is the group coordinator's UUID.
     pub room_uuid: String,
     /// Human-facing room name, for logs and UI.
     pub room_name: String,
@@ -50,9 +71,36 @@ pub struct RoomSession {
     pub device_id: String,
     /// TCP port this session's stream server binds to.
     pub port: u16,
+    /// Which Sonos player(s) this session drives.
+    pub target: SessionTarget,
 }
 
 impl RoomSession {
+    /// Every Sonos room this session wants to own, for the arbiter.
+    #[must_use]
+    pub fn claimed_rooms(&self) -> Vec<String> {
+        match &self.target {
+            SessionTarget::Room { uuid } => vec![uuid.clone()],
+            SessionTarget::AllRooms { uuids } => uuids.clone(),
+        }
+    }
+
+    /// Whether this is the aggregate "All Sonos" session.
+    #[must_use]
+    pub fn is_aggregate(&self) -> bool {
+        matches!(self.target, SessionTarget::AllRooms { .. })
+    }
+
+    /// This session's identity in the shared [`Arbiter`].
+    ///
+    /// Derived from the stream port, which the planner already guarantees is
+    /// unique per session and stable across restarts, so no separate counter
+    /// has to be kept in step with the plan.
+    #[must_use]
+    pub fn arbiter_id(&self) -> SessionId {
+        SessionId(u64::from(self.port))
+    }
+
     /// The fully derived [`Config`] for this session.
     #[must_use]
     pub fn config(&self, template: &Config) -> Config {
@@ -77,26 +125,75 @@ impl RoomSession {
 ///
 /// Returns [`Error::Config`] when the port range would overflow `u16`.
 pub fn sessions_for(bindings: &[Binding], base_port: u16) -> Result<Vec<RoomSession>> {
-    bindings
+    sessions_for_all(bindings, None, base_port)
+}
+
+/// [`sessions_for`], plus the aggregate "All Sonos" session when one was bound.
+///
+/// The aggregate is placed **last** so every room keeps the port it would have
+/// had without it; a stream port that moved whenever the household grew or
+/// shrank would invalidate any firewall rule the user had written.
+///
+/// # Errors
+///
+/// Returns [`Error::Config`] when the port range would overflow `u16`.
+pub fn sessions_for_all(
+    bindings: &[Binding],
+    aggregate: Option<&AggregateBinding>,
+    base_port: u16,
+) -> Result<Vec<RoomSession>> {
+    let total = bindings.len() + usize::from(aggregate.is_some());
+    let port_for = |index: usize| -> Result<u16> {
+        u16::try_from(index)
+            .ok()
+            .and_then(|o| base_port.checked_add(o))
+            .ok_or_else(|| {
+                Error::config(format!(
+                    "{total} sessions starting at port {base_port} exceeds the port range; lower stream.port"
+                ))
+            })
+    };
+
+    let mut sessions: Vec<RoomSession> = bindings
         .iter()
         .enumerate()
         .map(|(index, binding)| {
-            let offset = u16::try_from(index).ok();
-            let port = offset.and_then(|o| base_port.checked_add(o)).ok_or_else(|| {
-                Error::config(format!(
-                    "{} rooms starting at port {base_port} exceeds the port range; lower stream.port",
-                    bindings.len()
-                ))
-            })?;
             Ok(RoomSession {
                 room_uuid: binding.room.uuid.clone(),
                 room_name: binding.room.name.clone(),
                 device_name: binding.name.clone(),
                 device_id: binding.device_id.clone(),
-                port,
+                port: port_for(index)?,
+                target: SessionTarget::Room {
+                    uuid: binding.room.uuid.clone(),
+                },
             })
         })
-        .collect()
+        .collect::<Result<_>>()?;
+
+    if let Some(aggregate) = aggregate {
+        let uuids: Vec<String> = aggregate.rooms.iter().map(|r| r.uuid.clone()).collect();
+        // The coordinator is the first room, matching GroupPlayer::new.
+        let coordinator = uuids
+            .first()
+            .cloned()
+            .ok_or_else(|| Error::config("the All Sonos output was bound to no rooms"))?;
+        let coordinator_name = aggregate
+            .rooms
+            .first()
+            .map(|r| r.name.clone())
+            .unwrap_or_default();
+        sessions.push(RoomSession {
+            room_uuid: coordinator,
+            room_name: coordinator_name,
+            device_name: aggregate.name.clone(),
+            device_id: aggregate.device_id.clone(),
+            port: port_for(bindings.len())?,
+            target: SessionTarget::AllRooms { uuids },
+        });
+    }
+
+    Ok(sessions)
 }
 
 /// Supervises one [`Bridge`] per bound `sonosvad` endpoint.
@@ -171,14 +268,11 @@ impl MultiRoomBridge {
         endpoints: &E,
         rooms: &[sonos_vad_control::RoomKey],
     ) -> Result<Vec<RoomSession>> {
-        self.plan_with(endpoints, rooms, false)
+        self.plan_with(endpoints, rooms, PlanOptions::default())
     }
 
-    /// [`MultiRoomBridge::plan`], additionally hiding the driver's spare
-    /// endpoints from the Windows sound UI when `hide_spares` is set.
-    ///
-    /// The driver ships a fixed pool of slots, so a household with four rooms
-    /// would otherwise leave "Sonos Output 5" through "8" in the sound picker.
+    /// [`MultiRoomBridge::plan`], with spare-hiding and the aggregate
+    /// "All Sonos" output selected by `options`.
     ///
     /// # Errors
     ///
@@ -188,7 +282,7 @@ impl MultiRoomBridge {
         &self,
         endpoints: &E,
         rooms: &[sonos_vad_control::RoomKey],
-        hide_spares: bool,
+        options: PlanOptions,
     ) -> Result<Vec<RoomSession>> {
         if rooms.is_empty() {
             return Err(Error::config(
@@ -196,10 +290,14 @@ impl MultiRoomBridge {
             ));
         }
 
-        let bindings = sonos_vad_endpoint::bind_rooms_with(endpoints, rooms, hide_spares)
+        let bindings = sonos_vad_endpoint::bind_rooms_for(endpoints, rooms, options)
             .map_err(|err| Error::control(format!("binding Sonos rooms to endpoints: {err}")))?;
 
-        let sessions = sessions_for(&bindings, self.config.stream.port)?;
+        let sessions = sessions_for_all(
+            &bindings.rooms,
+            bindings.aggregate.as_ref(),
+            self.config.stream.port,
+        )?;
         if sessions.is_empty() {
             return Err(Error::config(
                 "the sonosvad driver exposed no usable endpoints",
@@ -215,10 +313,27 @@ impl MultiRoomBridge {
     /// Returns [`Error::Control`] only when *no* session could be started;
     /// individual room failures are logged and the rest keep running.
     pub fn run_sessions(&mut self, sessions: &[RoomSession]) -> Result<()> {
-        self.run_sessions_with(sessions, |config, stop| {
+        let seed = self.config.sonos.seed_host.clone();
+        let timeout = self.config.sonos.discovery_timeout_secs;
+        // One shared map for every session, so "All Sonos" and the per-room
+        // outputs hand speakers back and forth instead of fighting over them.
+        let arbiter = Arc::new(Arbiter::new());
+        self.run_sessions_with(sessions, move |session, config, stop| {
             let mut bridge = Bridge::new(config);
             bridge.adopt_stop_flag(stop);
-            bridge.run()
+            bridge.arbitrate(
+                Arc::clone(&arbiter),
+                session.arbiter_id(),
+                session.claimed_rooms(),
+            );
+            match &session.target {
+                SessionTarget::Room { .. } => bridge.run(),
+                SessionTarget::AllRooms { uuids } => {
+                    let group = crate::group::resolve_group(uuids, seed.as_deref(), timeout)?;
+                    let source = crate::open_capture(&bridge.config().capture)?;
+                    bridge.run_with(source, Box::new(group))
+                }
+            }
         })
     }
 
@@ -234,7 +349,7 @@ impl MultiRoomBridge {
     /// Returns [`Error::Control`] when every session failed.
     pub fn run_sessions_with<F>(&mut self, sessions: &[RoomSession], start: F) -> Result<()>
     where
-        F: Fn(Config, Arc<AtomicBool>) -> Result<()> + Send + Sync + 'static,
+        F: Fn(&RoomSession, Config, Arc<AtomicBool>) -> Result<()> + Send + Sync + 'static,
     {
         let start = Arc::new(start);
         let failures = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -246,18 +361,20 @@ impl MultiRoomBridge {
             let start = Arc::clone(&start);
             let failures = Arc::clone(&failures);
             let label = format!("{} -> {}", session.device_name, session.room_name);
+            let owned = session.clone();
 
             tracing::info!(
                 room = %session.room_name,
                 device = %session.device_name,
                 port = session.port,
+                aggregate = session.is_aggregate(),
                 "starting room bridge"
             );
 
             let handle = thread::Builder::new()
                 .name(format!("sonos-room-{}", session.port))
                 .spawn(move || {
-                    if let Err(err) = start(config, stop) {
+                    if let Err(err) = start(&owned, config, stop) {
                         tracing::error!(session = %label, %err, "room bridge stopped with an error");
                         // A poisoned lock means another room already panicked;
                         // the failure list is best-effort telemetry either way.
@@ -408,6 +525,9 @@ mod tests {
             device_name: "Sonos Living Room".to_owned(),
             device_id: "{0.0.0.00000000}.{slot-1}".to_owned(),
             port: 9100,
+            target: SessionTarget::Room {
+                uuid: "RINCON_1".to_owned(),
+            },
         };
         let config = session.config(&template);
 
@@ -459,7 +579,7 @@ mod tests {
         let recorder = Arc::clone(&seen);
 
         supervisor
-            .run_sessions_with(&sessions, move |config, stop| {
+            .run_sessions_with(&sessions, move |_session, config, stop| {
                 // Every session must observe the supervisor's shared stop flag.
                 assert!(!stop.load(Ordering::SeqCst));
                 recorder.lock().expect("lock").insert(
@@ -484,7 +604,7 @@ mod tests {
         let base = supervisor.config().stream.port;
 
         supervisor
-            .run_sessions_with(&sessions, move |config, _stop| {
+            .run_sessions_with(&sessions, move |_session, config, _stop| {
                 if config.stream.port == base {
                     Err(Error::control("simulated room failure"))
                 } else {
@@ -502,7 +622,7 @@ mod tests {
             .expect("plan");
 
         let error = supervisor
-            .run_sessions_with(&sessions, |_config, _stop| {
+            .run_sessions_with(&sessions, |_session, _config, _stop| {
                 Err(Error::control("simulated room failure"))
             })
             .expect_err("all rooms failed");

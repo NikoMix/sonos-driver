@@ -19,7 +19,7 @@ use audio_core::{
     AudioFormat, AudioFrame, AudioSource, CodecProfile, Config, Error, PipelineConfig, Result,
     StreamConfig, SyntheticSource,
 };
-use sonos_driver_core::{Bridge, PlayerControl};
+use sonos_driver_core::{Arbiter, Bridge, PlayerControl, SessionId};
 
 /// Wraps a [`SyntheticSource`], sleeping for each block's wall-clock duration so
 /// the otherwise free-running generator emits audio at real time — mimicking a
@@ -419,5 +419,146 @@ fn silence_releases_the_room_and_audio_reclaims_it() {
     assert!(
         calls.set_uri >= 2,
         "resuming must re-point the player, not just press play"
+    );
+}
+
+/// Records the room membership the bridge hands an aggregate player, on top of
+/// the plain call counters.
+#[derive(Default)]
+struct GroupCalls {
+    plays: u32,
+    stops: u32,
+    memberships: Vec<Vec<String>>,
+}
+
+/// Stands in for the grouped "All Sonos" coordinator: it cannot really form a
+/// group here, so it just records the membership it was told to hold.
+struct GroupMock {
+    calls: Arc<Mutex<GroupCalls>>,
+}
+
+impl GroupMock {
+    fn new() -> Self {
+        Self {
+            calls: Arc::new(Mutex::new(GroupCalls::default())),
+        }
+    }
+
+    fn calls(&self) -> Arc<Mutex<GroupCalls>> {
+        Arc::clone(&self.calls)
+    }
+}
+
+impl PlayerControl for GroupMock {
+    fn set_stream_uri(&self, _stream_url: &str, _content_type: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn play(&self) -> Result<()> {
+        self.calls.lock().expect("group calls poisoned").plays += 1;
+        Ok(())
+    }
+
+    fn stop(&self) -> Result<()> {
+        self.calls.lock().expect("group calls poisoned").stops += 1;
+        Ok(())
+    }
+
+    fn set_active_rooms(&self, room_uuids: &[String]) -> Result<()> {
+        self.calls
+            .lock()
+            .expect("group calls poisoned")
+            .memberships
+            .push(room_uuids.to_vec());
+        Ok(())
+    }
+}
+
+/// Wait until the aggregate's membership settles on `expected`.
+fn wait_for_membership(calls: &Arc<Mutex<GroupCalls>>, expected: &[&str], what: &str) {
+    let want: Vec<String> = expected.iter().map(|r| (*r).to_owned()).collect();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        {
+            let guard = calls.lock().expect("group calls poisoned");
+            if guard.memberships.last() == Some(&want) {
+                return;
+            }
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn all_sonos_yields_a_room_to_its_own_output_and_takes_it_back() {
+    const KITCHEN: &str = "RINCON_KITCHEN";
+    const BEDROOM: &str = "RINCON_BEDROOM";
+
+    let arbiter = Arc::new(Arbiter::new());
+
+    // The "All Sonos" endpoint: audible for the whole test, so it never idles
+    // out and every change it sees comes from arbitration alone.
+    let mut all_config = harness_config(CodecProfile::L16Pcm);
+    all_config.idle.stop_after_secs = 1;
+    let mut all_bridge = Bridge::new(all_config);
+    all_bridge.arbitrate(
+        Arc::clone(&arbiter),
+        SessionId(1),
+        vec![KITCHEN.to_owned(), BEDROOM.to_owned()],
+    );
+    let all_stop = all_bridge.stop_handle();
+    let group = GroupMock::new();
+    let group_calls = group.calls();
+    let all_audible = Arc::new(AtomicBool::new(true));
+    let all_source = QuietThenLoudSource::new(Arc::clone(&all_audible));
+    let all_worker =
+        thread::spawn(move || all_bridge.run_with(Box::new(all_source), Box::new(group)));
+
+    wait_for_membership(&group_calls, &[KITCHEN, BEDROOM], "the party to form");
+
+    // The bedroom's own endpoint starts playing. Most recent wins, so the party
+    // has to give that room up while keeping the kitchen.
+    let mut room_config = harness_config(CodecProfile::L16Pcm);
+    room_config.idle.stop_after_secs = 1;
+    let mut room_bridge = Bridge::new(room_config);
+    room_bridge.arbitrate(Arc::clone(&arbiter), SessionId(2), vec![BEDROOM.to_owned()]);
+    let room_stop = room_bridge.stop_handle();
+    let room_player = MockPlayer::new();
+    let room_calls = room_player.calls();
+    let room_audible = Arc::new(AtomicBool::new(true));
+    let room_source = QuietThenLoudSource::new(Arc::clone(&room_audible));
+    let room_worker =
+        thread::spawn(move || room_bridge.run_with(Box::new(room_source), Box::new(room_player)));
+
+    wait_until(
+        &room_calls,
+        Duration::from_secs(10),
+        "the room to play",
+        |c| c.play >= 1,
+    );
+    wait_for_membership(&group_calls, &[KITCHEN], "the party to yield the bedroom");
+
+    // The bedroom falls silent: its idle release hands the room back, and the
+    // party — still playing — picks it up instead of leaving it silent.
+    room_audible.store(false, Ordering::SeqCst);
+    wait_for_membership(&group_calls, &[KITCHEN, BEDROOM], "the party to reclaim it");
+
+    room_stop.stop();
+    all_stop.stop();
+    room_worker
+        .join()
+        .expect("room session thread panicked")
+        .expect("room session returned Ok");
+    all_worker
+        .join()
+        .expect("aggregate session thread panicked")
+        .expect("aggregate session returned Ok");
+
+    // Yielding a room must not have interrupted the rooms the party kept.
+    let calls = group_calls.lock().expect("group calls poisoned");
+    assert_eq!(
+        calls.plays, 1,
+        "the party played through the hand-over instead of restarting"
     );
 }

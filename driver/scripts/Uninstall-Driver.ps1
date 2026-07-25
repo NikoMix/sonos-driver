@@ -86,6 +86,16 @@ if (-not $KeepEndpointNames) {
         $SonosDriverExe = (Get-Command 'sonos-driver.exe' -ErrorAction SilentlyContinue).Source
     }
     if ($SonosDriverExe -and (Test-Path -LiteralPath $SonosDriverExe)) {
+        # Grouping lives in the speakers, not in Windows: if the service was
+        # killed while "All Sonos" was playing, the household is still grouped
+        # and removing the driver would leave no way to undo it.
+        Write-Host 'Splitting any rooms left in the All Sonos group...'
+        $ungroup = Invoke-NativeCommand -Exe $SonosDriverExe -Arguments @('vad', 'ungroup')
+        Write-Host $ungroup.Output
+        if ($ungroup.ExitCode -ne 0) {
+            Write-Warning "vad ungroup exited $($ungroup.ExitCode); rooms may still be grouped. Split them in the Sonos app."
+        }
+
         Write-Host 'Restoring factory endpoint names...'
         $release = Invoke-NativeCommand -Exe $SonosDriverExe -Arguments @('vad', 'release')
         Write-Host $release.Output

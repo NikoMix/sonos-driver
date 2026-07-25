@@ -16,8 +16,7 @@ use sonos_control::{controller_for_room, controller_for_uuid, SonosController};
 /// which would make an SSDP search return before any player could answer; three
 /// seconds is the shortest interval that reliably collects responses on a
 /// typical LAN.
-const MIN_DISCOVERY: Duration = Duration::from_secs(3);
-
+pub(crate) const MIN_DISCOVERY: Duration = Duration::from_secs(3);
 /// The subset of Sonos AVTransport control the bridge drives.
 ///
 /// Implemented for [`sonos_control::SonosController`] in production and by an
@@ -46,6 +45,49 @@ pub trait PlayerControl: Send {
     /// Returns an [`Error`] if the underlying control call fails.
     fn stop(&self) -> Result<()>;
 
+    /// Make this player render `coordinator_uuid`'s stream in sync with it.
+    ///
+    /// Only meaningful for real Sonos players; the default rejects the call so
+    /// a player that cannot be grouped fails loudly instead of silently
+    /// dropping out of a group it was supposed to have joined.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] if the player cannot be grouped or the call fails.
+    fn join_group(&self, coordinator_uuid: &str) -> Result<()> {
+        Err(Error::config(format!(
+            "this player cannot join a Sonos group (coordinator {coordinator_uuid})"
+        )))
+    }
+
+    /// Return this player to being its own standalone coordinator.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] if the player cannot be ungrouped or the call
+    /// fails.
+    fn leave_group(&self) -> Result<()> {
+        Err(Error::config("this player cannot leave a Sonos group"))
+    }
+
+    /// Restrict this player to the listed Sonos rooms, identified by UUID.
+    ///
+    /// Called on every supervise tick with the rooms the arbiter says this
+    /// session still owns, so the call must be **idempotent and cheap when
+    /// nothing changed** — it runs several times a second.
+    ///
+    /// The default is a no-op: a single-room player owns exactly one room, and
+    /// losing it is expressed by stopping the session outright. Only the
+    /// aggregate "All Sonos" player ([`crate::GroupPlayer`]) implements this,
+    /// where it adds and removes members of the party group.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] if regrouping fails.
+    fn set_active_rooms(&self, _room_uuids: &[String]) -> Result<()> {
+        Ok(())
+    }
+
     /// The player's own LAN IP address, when known.
     ///
     /// The session uses this to advertise a stream URL on the local interface
@@ -71,6 +113,14 @@ impl PlayerControl for SonosController {
 
     fn stop(&self) -> Result<()> {
         SonosController::stop(self)
+    }
+
+    fn join_group(&self, coordinator_uuid: &str) -> Result<()> {
+        SonosController::join_group(self, coordinator_uuid)
+    }
+
+    fn leave_group(&self) -> Result<()> {
+        SonosController::leave_group(self)
     }
 
     fn peer_ip(&self) -> Option<IpAddr> {

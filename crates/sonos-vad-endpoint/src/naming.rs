@@ -16,6 +16,10 @@ pub const DEFAULT_ADAPTER_NAME: &str = "Sonos Virtual Audio Device";
 /// Prefix of the factory endpoint names declared in the driver INF.
 pub const FACTORY_NAME_PREFIX: &str = "Sonos Output";
 
+/// Sound-picker name of the aggregate output that plays to the whole
+/// household at once.
+pub const AGGREGATE_NAME: &str = "All Sonos";
+
 /// The factory name of slot `slot` (1-based), matching the driver INF.
 #[must_use]
 pub fn factory_name_for_slot(slot: u32) -> String {
@@ -67,6 +71,50 @@ pub struct Release {
     pub name: String,
 }
 
+/// The endpoint bound to the aggregate "All Sonos" output.
+///
+/// Kept separate from [`Binding`] rather than generalising `Binding.room` into
+/// a one-or-many enum: every existing consumer of `binds` means "this endpoint
+/// is exactly this room", and blurring that would push a match over an enum
+/// into code that only ever cares about the single-room case.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AggregateBinding {
+    /// Stable WASAPI endpoint id to loopback-capture.
+    pub device_id: String,
+    /// The sound-picker name the endpoint should carry ([`AGGREGATE_NAME`]).
+    pub name: String,
+    /// Every room this output plays to, in binding order. The first is the one
+    /// that will coordinate the Sonos group.
+    pub rooms: Vec<RoomKey>,
+    /// Whether the endpoint's current name differs from [`Self::name`].
+    pub rename_needed: bool,
+}
+
+/// What a plan should produce beyond the plain room-to-endpoint mapping.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PlanOptions {
+    /// Disable the endpoints no room was bound to, so the Windows sound picker
+    /// shows exactly the household's rooms.
+    pub hide_spares: bool,
+    /// Reserve an endpoint for the aggregate "All Sonos" output.
+    ///
+    /// Ignored when fewer than two rooms exist, where an "everything" output
+    /// would just duplicate the only room.
+    pub aggregate: bool,
+}
+
+impl PlanOptions {
+    /// What the service and the CLI use: rooms, the aggregate output, and no
+    /// leftover placeholders.
+    #[must_use]
+    pub fn product() -> Self {
+        Self {
+            hide_spares: true,
+            aggregate: true,
+        }
+    }
+}
+
 /// The renames needed to make the endpoint pool match the discovered rooms.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BindingPlan {
@@ -83,10 +131,12 @@ pub struct BindingPlan {
     /// Endpoint ids to hide from the Windows sound UI, because no room is bound
     /// to them.
     ///
-    /// Empty unless [`plan_bindings_with`] was asked to hide spares: the driver
+    /// Empty unless [`plan_bindings_for`] was asked to hide spares: the driver
     /// ships a fixed pool of slots, so without this a household with four rooms
     /// leaves "Sonos Output 5" through "8" cluttering the sound picker forever.
     pub hide: Vec<String>,
+    /// The endpoint reserved for the aggregate "All Sonos" output, if any.
+    pub aggregate: Option<AggregateBinding>,
 }
 
 /// Plans the renames that converge `current` onto `rooms`.
@@ -100,20 +150,21 @@ pub struct BindingPlan {
 /// ignored entirely.
 #[must_use]
 pub fn plan_bindings(current: &[VadEndpoint], rooms: &[RoomKey]) -> BindingPlan {
-    plan_bindings_with(current, rooms, false)
+    plan_bindings_for(current, rooms, PlanOptions::default())
 }
 
-/// [`plan_bindings`], additionally hiding the endpoints no room was bound to
-/// when `hide_spares` is set.
+/// [`plan_bindings`], with the aggregate output and spare-hiding behaviour
+/// selected by `options`.
 ///
-/// The driver exposes a fixed pool of slots, so a household smaller than the
-/// pool always leaves some over. Hiding them is what makes the sound picker
-/// show exactly the user's rooms and nothing else.
+/// The aggregate takes the **highest** slot rather than the first, so adding
+/// it does not shift every room's position in the sound picker, and so a
+/// household that outgrows the driver loses a placeholder rather than
+/// "All Sonos".
 #[must_use]
-pub fn plan_bindings_with(
+pub fn plan_bindings_for(
     current: &[VadEndpoint],
     rooms: &[RoomKey],
-    hide_spares: bool,
+    options: PlanOptions,
 ) -> BindingPlan {
     let mut slots: Vec<&VadEndpoint> = current
         .iter()
@@ -121,9 +172,21 @@ pub fn plan_bindings_with(
         .collect();
     slots.sort_by_key(|e| slot_from_factory_name(&e.device_desc).unwrap_or(u32::MAX));
 
+    // Reserve the aggregate's slot before rooms are placed, so the two never
+    // compete for it.
+    let aggregate_slot = if options.aggregate && rooms.len() >= 2 {
+        slots.pop()
+    } else {
+        None
+    };
+
     // Desired name per room, de-duplicated the same way the rest of the project
-    // derives device names.
+    // derives device names. "All Sonos" is pre-claimed so a room actually
+    // called that gets suffixed instead of colliding with the aggregate.
     let mut taken = BTreeSet::new();
+    if aggregate_slot.is_some() {
+        taken.insert(AGGREGATE_NAME.to_owned());
+    }
     let desired: Vec<(RoomKey, String)> = rooms
         .iter()
         .map(|room| {
@@ -190,9 +253,21 @@ pub fn plan_bindings_with(
                     name: endpoint.device_desc.clone(),
                 });
             }
-            if hide_spares && endpoint.active {
+            if options.hide_spares && endpoint.active {
                 plan.hide.push(endpoint.device_id.clone());
             }
+        }
+    }
+
+    if let Some(endpoint) = aggregate_slot {
+        plan.aggregate = Some(AggregateBinding {
+            device_id: endpoint.device_id.clone(),
+            name: AGGREGATE_NAME.to_owned(),
+            rooms: desired.iter().map(|(room, _)| room.clone()).collect(),
+            rename_needed: endpoint.friendly_name != AGGREGATE_NAME,
+        });
+        if endpoint.disabled {
+            plan.show.push(endpoint.device_id.clone());
         }
     }
 
@@ -209,7 +284,7 @@ pub fn plan_bindings_with(
 /// the driver and cannot be re-enabled through any UI once its INF is gone.
 #[must_use]
 pub fn plan_release_all(current: &[VadEndpoint]) -> BindingPlan {
-    let mut plan = plan_bindings_with(current, &[], false);
+    let mut plan = plan_bindings_for(current, &[], PlanOptions::default());
     plan.show = current
         .iter()
         .filter(|e| slot_from_factory_name(&e.device_desc).is_some() && e.disabled)

@@ -62,6 +62,13 @@ pub(crate) enum VadCommand {
     Bind(VadBindArgs),
     /// Restore every endpoint's factory name ("Sonos Output N").
     Release,
+    /// Split any rooms left grouped by the "All Sonos" output.
+    ///
+    /// Grouping lives in the speakers, so a service killed mid-playback leaves
+    /// the household grouped with nothing in Windows to undo it from. This
+    /// releases exactly the rooms the driver grouped, leaving groups you made
+    /// yourself alone.
+    Ungroup(VadUngroupArgs),
     /// Loopback-capture one endpoint and report whether its clock runs true.
     ///
     /// This is the driver's core correctness check and needs no Sonos hardware:
@@ -89,6 +96,17 @@ pub(crate) struct VadProbeArgs {
     /// Emit machine-readable JSON instead of a human-readable report.
     #[arg(long)]
     pub(crate) json: bool,
+}
+
+/// Arguments for `vad ungroup`.
+#[derive(Debug, Args)]
+pub(crate) struct VadUngroupArgs {
+    /// Address of a known Sonos player, used instead of SSDP multicast.
+    #[arg(long, value_name = "HOST")]
+    pub(crate) seed_host: Option<String>,
+    /// Seconds to wait for discovery responses.
+    #[arg(long, default_value_t = 3)]
+    pub(crate) timeout: u32,
 }
 
 /// Arguments for `vad status`.
@@ -137,6 +155,12 @@ pub(crate) struct VadBindArgs {
     /// placeholders. Pass this to keep them, e.g. when diagnosing the driver.
     #[arg(long)]
     pub(crate) keep_spare_endpoints: bool,
+    /// Do not expose the aggregate "All Sonos" output.
+    ///
+    /// By default one endpoint plays to the whole household at once, as a
+    /// synchronised Sonos group. Pass this to bind only the individual rooms.
+    #[arg(long)]
+    pub(crate) no_all_sonos: bool,
 }
 
 /// Arguments for `vad serve`.

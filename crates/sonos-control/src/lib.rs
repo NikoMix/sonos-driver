@@ -509,11 +509,104 @@ impl SonosController {
         )?;
         Ok(())
     }
+
+    /// Make this player a member of the group coordinated by
+    /// `coordinator_uuid`, so it renders that coordinator's stream in sync.
+    ///
+    /// This is the mechanism behind the Sonos app's grouping: a member's
+    /// transport URI is set to the pseudo-scheme `x-rincon:<coordinator uuid>`,
+    /// after which the coordinator's clock drives it. Streaming the same HTTP
+    /// URL to each player separately would *look* equivalent and sound wrong —
+    /// every player buffers independently, so they drift audibly apart.
+    ///
+    /// Calling this on the coordinator itself is a no-op that Sonos rejects, so
+    /// callers must skip it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Control`] on a SOAP fault and [`Error::Io`] on a
+    /// transport failure.
+    pub fn join_group(&self, coordinator_uuid: &str) -> Result<()> {
+        let uri = group_uri(coordinator_uuid)?;
+        soap::call(
+            &self.av_transport_url,
+            soap::AV_TRANSPORT_SERVICE,
+            "SetAVTransportURI",
+            &[
+                ("InstanceID", "0"),
+                ("CurrentURI", &uri),
+                // Deliberately empty: a group member has no content of its own.
+                ("CurrentURIMetaData", ""),
+            ],
+            self.timeout,
+        )?;
+        Ok(())
+    }
+
+    /// Remove this player from whatever group it is in, leaving it a standalone
+    /// coordinator again.
+    ///
+    /// Safe to call on a player that is already standalone.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Control`] on a SOAP fault and [`Error::Io`] on a
+    /// transport failure.
+    pub fn leave_group(&self) -> Result<()> {
+        soap::call(
+            &self.av_transport_url,
+            soap::AV_TRANSPORT_SERVICE,
+            "BecomeCoordinatorOfStandaloneGroup",
+            &[("InstanceID", "0")],
+            self.timeout,
+        )?;
+        Ok(())
+    }
+}
+
+/// The `x-rincon:` transport URI that makes a player follow `coordinator_uuid`.
+///
+/// The UUID is validated rather than trusted: it is interpolated into a URI
+/// that Sonos parses, and a stray value from a malformed topology response
+/// would otherwise produce a confusing player-side fault instead of a clear
+/// error here.
+fn group_uri(coordinator_uuid: &str) -> Result<String> {
+    let uuid = coordinator_uuid.trim();
+    if uuid.is_empty()
+        || !uuid
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return Err(Error::control(format!(
+            "not a usable Sonos coordinator uuid: {coordinator_uuid:?}"
+        )));
+    }
+    Ok(format!("x-rincon:{uuid}"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn group_uris_use_the_rincon_pseudo_scheme() {
+        assert_eq!(
+            group_uri("RINCON_949F3EC13FA801400").expect("valid uuid"),
+            "x-rincon:RINCON_949F3EC13FA801400"
+        );
+        // Topology responses are whitespace-formatted XML.
+        assert_eq!(
+            group_uri("  RINCON_ABC  ").expect("valid uuid"),
+            "x-rincon:RINCON_ABC"
+        );
+    }
+
+    #[test]
+    fn group_uris_reject_values_that_would_corrupt_the_uri() {
+        for bad in ["", "   ", "RINCON_A/B", "RINCON_A B", "x-rincon:RINCON_A"] {
+            assert!(group_uri(bad).is_err(), "should have rejected {bad:?}");
+        }
+    }
 
     #[test]
     fn seeds_are_normalised_to_a_bare_host() {

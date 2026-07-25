@@ -13,6 +13,10 @@
     Source/Filters/minipairs.h. sonosvad.vcxproj runs this script as a
     pre-build step so the three can never drift.
 
+    The endpoints are interchangeable; which one becomes a room and which one
+    becomes the "All Sonos" aggregate is decided at bind time by the user-mode
+    service, not here.
+
 .NOTES
     INF/INX files consumed by stampinf must be UTF-16LE (or ASCII). This script
     writes UTF-16LE with a BOM, matching the WDK samples.
@@ -20,7 +24,7 @@
 [CmdletBinding()]
 param(
     [ValidateRange(1, 32)]
-    [int]$EndpointCount = 8,
+    [int]$EndpointCount = 9,
 
     [string]$OutputPath
 )

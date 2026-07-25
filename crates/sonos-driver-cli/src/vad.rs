@@ -15,12 +15,14 @@ use sonos_driver_core::capture::LoopbackCapture;
 use sonos_driver_core::core::{AudioSource, CaptureConfig, Config};
 use sonos_driver_core::vad::RoomKey;
 use sonos_driver_core::vad_endpoint::{
-    factory_name_for_slot, plan_bindings_with, plan_release_all, SystemEndpoints, VadEndpoint,
-    VadEndpoints, DEFAULT_ADAPTER_NAME,
+    factory_name_for_slot, plan_bindings_for, plan_release_all, PlanOptions, SystemEndpoints,
+    VadEndpoint, VadEndpoints, DEFAULT_ADAPTER_NAME,
 };
 use sonos_driver_core::{MultiRoomBridge, RoomSession};
 
-use crate::cli::{VadBindArgs, VadCommand, VadProbeArgs, VadServeArgs, VadStatusArgs};
+use crate::cli::{
+    VadBindArgs, VadCommand, VadProbeArgs, VadServeArgs, VadStatusArgs, VadUngroupArgs,
+};
 use crate::commands::install_ctrl_c;
 use crate::config;
 
@@ -30,6 +32,7 @@ pub(crate) fn run_vad(command: &VadCommand, config_path: Option<&Path>) -> anyho
         VadCommand::Status(args) => run_status(args),
         VadCommand::Bind(args) => run_bind(args),
         VadCommand::Release => run_release(),
+        VadCommand::Ungroup(args) => run_ungroup(args),
         VadCommand::Probe(args) => run_probe(args),
         VadCommand::Serve(args) => run_serve(config_path, args),
     }
@@ -102,17 +105,30 @@ fn run_status(args: &VadStatusArgs) -> anyhow::Result<()> {
 fn run_bind(args: &VadBindArgs) -> anyhow::Result<()> {
     let rooms = discover_rooms(args.seed_host.as_deref(), Duration::from_secs(args.timeout))?;
     let endpoints = SystemEndpoints::new();
+    let options = PlanOptions {
+        hide_spares: !args.keep_spare_endpoints,
+        aggregate: !args.no_all_sonos,
+    };
 
     if args.dry_run {
         let current = match args.assume_endpoints {
             Some(count) => synthetic_endpoints(count),
             None => endpoints.list().context("listing sonosvad endpoints")?,
         };
-        let plan = plan_bindings_with(&current, &rooms, !args.keep_spare_endpoints);
+        let plan = plan_bindings_for(&current, &rooms, options);
         println!("# Bindings that would be applied:\n");
         for bind in &plan.binds {
             let mark = if bind.rename_needed { "*" } else { " " };
             println!("  {mark} {} -> {}", bind.name, bind.room.name);
+        }
+        if let Some(aggregate) = &plan.aggregate {
+            let mark = if aggregate.rename_needed { "*" } else { " " };
+            println!(
+                "  {mark} {} -> all {} rooms (coordinated by {})",
+                aggregate.name,
+                aggregate.rooms.len(),
+                aggregate.rooms.first().map_or("?", |r| r.name.as_str())
+            );
         }
         for release in &plan.releases {
             println!("  * {} (released)", release.name);
@@ -136,16 +152,19 @@ fn run_bind(args: &VadBindArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let bindings = sonos_driver_core::vad_endpoint::bind_rooms_with(
-        &endpoints,
-        &rooms,
-        !args.keep_spare_endpoints,
-    )
-    .context("binding Sonos rooms to sonosvad endpoints")?;
+    let bindings = sonos_driver_core::vad_endpoint::bind_rooms_for(&endpoints, &rooms, options)
+        .context("binding Sonos rooms to sonosvad endpoints")?;
 
-    println!("Bound {} room(s):", bindings.len());
-    for binding in &bindings {
+    println!("Bound {} room(s):", bindings.rooms.len());
+    for binding in &bindings.rooms {
         println!("  {} -> {}", binding.name, binding.room.name);
+    }
+    if let Some(aggregate) = &bindings.aggregate {
+        println!(
+            "  {} -> all {} rooms",
+            aggregate.name,
+            aggregate.rooms.len()
+        );
     }
     Ok(())
 }
@@ -187,6 +206,20 @@ fn run_release() -> anyhow::Result<()> {
     if revealed > 0 {
         println!("Restored {revealed} hidden endpoint(s) to the Windows sound UI.");
     }
+    Ok(())
+}
+
+fn run_ungroup(args: &VadUngroupArgs) -> anyhow::Result<()> {
+    let journal = sonos_driver_core::party::default_journal_path();
+    let recorded = sonos_driver_core::party::recorded(&journal);
+    if recorded.is_empty() {
+        println!("No rooms are recorded as grouped by the All Sonos output.");
+        return Ok(());
+    }
+
+    let released = sonos_driver_core::disband(&journal, args.seed_host.as_deref(), args.timeout)
+        .context("splitting the All Sonos group")?;
+    println!("Released {released} of {} room(s).", recorded.len());
     Ok(())
 }
 

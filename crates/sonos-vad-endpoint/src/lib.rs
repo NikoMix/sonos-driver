@@ -38,9 +38,9 @@ mod naming;
 mod sys;
 
 pub use naming::{
-    factory_name_for_slot, plan_bindings, plan_bindings_with, plan_release_all,
-    slot_from_factory_name, Binding, BindingPlan, Release, DEFAULT_ADAPTER_NAME,
-    FACTORY_NAME_PREFIX,
+    factory_name_for_slot, plan_bindings, plan_bindings_for, plan_release_all,
+    slot_from_factory_name, AggregateBinding, Binding, BindingPlan, PlanOptions, Release,
+    AGGREGATE_NAME, DEFAULT_ADAPTER_NAME, FACTORY_NAME_PREFIX,
 };
 
 use sonos_vad_control::RoomKey;
@@ -214,6 +214,16 @@ pub fn apply_plan<E: VadEndpoints + ?Sized>(endpoints: &E, plan: &BindingPlan) -
         }
     }
 
+    if let Some(aggregate) = &plan.aggregate {
+        if aggregate.rename_needed {
+            tracing::debug!(device_id = %aggregate.device_id, name = %aggregate.name, rooms = aggregate.rooms.len(), "binding aggregate endpoint");
+            if let Err(error) = endpoints.rename(&aggregate.device_id, &aggregate.name) {
+                tracing::warn!(device_id = %aggregate.device_id, %error, "failed to bind aggregate endpoint");
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+
     for device_id in &plan.hide {
         tracing::debug!(%device_id, "hiding spare endpoint");
         if let Err(error) = endpoints.set_visible(device_id, false) {
@@ -240,22 +250,32 @@ pub fn bind_rooms<E: VadEndpoints + ?Sized>(
     endpoints: &E,
     rooms: &[RoomKey],
 ) -> Result<Vec<Binding>> {
-    bind_rooms_with(endpoints, rooms, false)
+    Ok(bind_rooms_for(endpoints, rooms, PlanOptions::default())?.rooms)
 }
 
-/// [`bind_rooms`], additionally hiding the endpoints no room was bound to when
-/// `hide_spares` is set.
+/// What [`bind_rooms_for`] resolved: one endpoint per room, plus the aggregate
+/// output when one was reserved.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Bindings {
+    /// One endpoint per discovered room.
+    pub rooms: Vec<Binding>,
+    /// The "All Sonos" endpoint, when [`PlanOptions::aggregate`] asked for one
+    /// and there were at least two rooms to aggregate.
+    pub aggregate: Option<AggregateBinding>,
+}
+
+/// [`bind_rooms`], with aggregate and spare-hiding behaviour from `options`.
 ///
 /// # Errors
 ///
 /// Propagates any error from [`VadEndpoints::list`] or [`apply_plan`].
-pub fn bind_rooms_with<E: VadEndpoints + ?Sized>(
+pub fn bind_rooms_for<E: VadEndpoints + ?Sized>(
     endpoints: &E,
     rooms: &[RoomKey],
-    hide_spares: bool,
-) -> Result<Vec<Binding>> {
+    options: PlanOptions,
+) -> Result<Bindings> {
     let current = endpoints.list()?;
-    let plan = plan_bindings_with(&current, rooms, hide_spares);
+    let plan = plan_bindings_for(&current, rooms, options);
 
     if plan.unplaced > 0 {
         tracing::warn!(
@@ -270,9 +290,18 @@ pub fn bind_rooms_with<E: VadEndpoints + ?Sized>(
             "hiding spare sonosvad endpoints so the sound picker shows only your rooms"
         );
     }
+    if options.aggregate && plan.aggregate.is_none() {
+        tracing::info!(
+            rooms = rooms.len(),
+            "not exposing the All Sonos output: it needs at least two rooms"
+        );
+    }
 
     apply_plan(endpoints, &plan)?;
-    Ok(plan.binds)
+    Ok(Bindings {
+        rooms: plan.binds,
+        aggregate: plan.aggregate,
+    })
 }
 
 /// The real Windows implementation of [`VadEndpoints`].
@@ -517,9 +546,17 @@ mod tests {
             RoomKey::new("RINCON_2", "Küche"),
         ];
 
-        let bindings = bind_rooms_with(&fake, &rooms, true).expect("bind succeeds");
+        let bindings = bind_rooms_for(
+            &fake,
+            &rooms,
+            PlanOptions {
+                hide_spares: true,
+                aggregate: false,
+            },
+        )
+        .expect("bind succeeds");
 
-        assert_eq!(bindings.len(), 2);
+        assert_eq!(bindings.rooms.len(), 2);
         assert_eq!(
             fake.visible_slots(),
             vec![1, 2],
@@ -530,10 +567,14 @@ mod tests {
     #[test]
     fn a_hidden_endpoint_is_revealed_when_a_room_needs_it() {
         let fake = FakeEndpoints::with_slots(3);
+        let options = PlanOptions {
+            hide_spares: true,
+            aggregate: false,
+        };
 
         // One room: slots 2 and 3 get hidden.
         let one = vec![RoomKey::new("RINCON_1", "Wohnzimmer")];
-        bind_rooms_with(&fake, &one, true).expect("first bind succeeds");
+        bind_rooms_for(&fake, &one, options).expect("first bind succeeds");
         assert_eq!(fake.visible_slots(), vec![1]);
 
         // A second room appears; its slot has to come back.
@@ -541,7 +582,7 @@ mod tests {
             RoomKey::new("RINCON_1", "Wohnzimmer"),
             RoomKey::new("RINCON_2", "Küche"),
         ];
-        bind_rooms_with(&fake, &two, true).expect("second bind succeeds");
+        bind_rooms_for(&fake, &two, options).expect("second bind succeeds");
         assert_eq!(fake.visible_slots(), vec![1, 2]);
         assert_eq!(
             fake.names(),

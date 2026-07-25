@@ -117,6 +117,7 @@ SONOSVAD_ENDPOINT_MINIPAIR(5)
 SONOSVAD_ENDPOINT_MINIPAIR(6)
 SONOSVAD_ENDPOINT_MINIPAIR(7)
 SONOSVAD_ENDPOINT_MINIPAIR(8)
+SONOSVAD_ENDPOINT_MINIPAIR(9)
 
 //=============================================================================
 //
@@ -133,6 +134,7 @@ PENDPOINT_MINIPAIR  g_RenderEndpoints[] =
     &SonosOutput6Miniports,
     &SonosOutput7Miniports,
     &SonosOutput8Miniports,
+    &SonosOutput9Miniports,
 };
 
 #define g_cRenderEndpoints  (SIZEOF_ARRAY(g_RenderEndpoints))

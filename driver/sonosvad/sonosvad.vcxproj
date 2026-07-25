@@ -122,6 +122,14 @@
         timestamp, so never let tracking skip the stamp.
       -->
       <MinimalRebuildFromTracking>false</MinimalRebuildFromTracking>
+      <!--
+        stampinf's default '*' date is the machine's *local* date, but inf2cat
+        compares DriverVer against UTC. East of UTC, every build between
+        midnight and the UTC offset therefore fails with
+        "22.9.7: DriverVer set to a date in the future". Stamping the UTC date
+        explicitly makes the build timezone-proof.
+      -->
+      <DateStamp>$([System.DateTime]::UtcNow.ToString("MM/dd/yyyy"))</DateStamp>
     </Inf>
     <FilesToPackage Include="$(TargetPath)" Condition="'$(ConfigurationType)'=='Driver' or '$(ConfigurationType)'=='DynamicLibrary'" />
   </ItemGroup>
@@ -134,6 +142,10 @@
     <Exec Command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)tools\Generate-Inx.ps1&quot; -EndpointCount $(SonosVadEndpointCount)" />
   </Target>
   <PropertyGroup>
-    <SonosVadEndpointCount Condition="'$(SonosVadEndpointCount)'==''">8</SonosVadEndpointCount>
+    <!--
+      8 room slots + 1 reserved for the "All Sonos" aggregate output.
+      Must match SONOSVAD_ENDPOINT_COUNT in Source\Inc\definitions.h.
+    -->
+    <SonosVadEndpointCount Condition="'$(SonosVadEndpointCount)'==''">9</SonosVadEndpointCount>
   </PropertyGroup>
 </Project>
