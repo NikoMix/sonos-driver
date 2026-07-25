@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project>
+  <!--
+    Build output redirection for the sonosvad driver.
+
+    Why this exists
+    ===============
+    `stampinf.exe` (the WDK tool that substitutes $ARCH$ / $DRIVERVER$ /
+    $KMDFVERSION$ tokens in an .inx) rewrites the INF in place through a
+    memory-mapped view of the file. Memory-mapped writes are silently dropped
+    on Windows Sandbox host-mapped folders (`<MappedFolder>` shares): stampinf
+    reports success and exits 0, but the bytes never reach disk, and the build
+    then fails in InfVerif with:
+
+        error 1274: Unresolved $ARCH$ token ... Must run stampinf tool
+
+    Keeping every build output on a real local volume avoids the problem
+    entirely, and is faster on any machine. Override `SonosVadBuildRoot` to
+    relocate; `driver/scripts/Build-Driver.ps1` sets it to a local path.
+  -->
+  <PropertyGroup>
+    <SonosVadBuildRoot Condition="'$(SonosVadBuildRoot)' == ''">$(MSBuildThisFileDirectory)build\</SonosVadBuildRoot>
+    <SonosVadBuildRoot Condition="!HasTrailingSlash('$(SonosVadBuildRoot)')">$(SonosVadBuildRoot)\</SonosVadBuildRoot>
+  </PropertyGroup>
+  <!--
+    NOTE: IntDir/OutDir cannot be set here. The WDK's WindowsDriver.Shared.Props
+    (pulled in by the WindowsKernelModeDriver10.0 toolset, i.e. by
+    Microsoft.Cpp.props) assigns them unconditionally, clobbering anything set
+    this early. Each project therefore applies SonosVadBuildRoot in a
+    PropertyGroup placed *after* its Microsoft.Cpp.props import.
+  -->
+</Project>
