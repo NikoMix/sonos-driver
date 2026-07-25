@@ -21,6 +21,7 @@ pub use audio_pipeline as pipeline;
 pub use sonos_control as control;
 pub use stream_server as server;
 
+mod idle;
 mod latency;
 mod metrics;
 mod multiroom;

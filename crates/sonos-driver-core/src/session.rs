@@ -24,6 +24,7 @@ use audio_core::{
 use audio_pipeline::Pipeline;
 use stream_server::{ServerConfig, StreamServer};
 
+use crate::idle::{IdleAction, IdleTracker};
 use crate::latency::LatencyAccumulator;
 use crate::metrics::SharedMetrics;
 use crate::player::PlayerControl;
@@ -75,6 +76,21 @@ pub(crate) fn run_session(
 
     tracing::info!(%stream_url, %content_type, output_rate, "bridge session starting");
 
+    // Shared between the encode thread (which observes every block) and the
+    // supervisor below (which acts on the transitions).
+    let idle = Arc::new(IdleTracker::new(
+        config.idle.stop_after(),
+        config.idle.silence_threshold(),
+    ));
+    if idle.is_enabled() {
+        tracing::info!(
+            release_after_secs = config.idle.stop_after_secs,
+            "idle release enabled; the room is handed back while Windows is silent"
+        );
+    } else {
+        tracing::info!("idle release disabled; the room stays occupied for the whole session");
+    }
+
     // Spawn the capture → pipeline → encode → publish loop.
     let worker = EncodeWorker {
         source,
@@ -85,6 +101,7 @@ pub(crate) fn run_session(
         stop: Arc::clone(stop),
         metrics: Arc::clone(metrics),
         latency: Arc::clone(latency),
+        idle: Arc::clone(&idle),
     };
     let handle = thread::Builder::new()
         .name("bridge-encode".to_owned())
@@ -99,6 +116,7 @@ pub(crate) fn run_session(
         server.stop();
         return Err(error);
     }
+    idle.mark_resumed();
 
     // Supervise until a stop is requested or the encode loop ends on its own.
     supervise(
@@ -108,6 +126,7 @@ pub(crate) fn run_session(
         &stream_url,
         stop,
         metrics,
+        &idle,
     );
 
     // Graceful teardown: stop the loop, join it, stop the player, stop the
@@ -144,12 +163,18 @@ fn resolve_stream_url(server: &StreamServer, control: &dyn PlayerControl) -> Str
     )
 }
 
-/// Poll until a stop is requested or the encode thread finishes, re-pointing the
-/// player if a previously connected client drops away for long enough.
+/// Poll until a stop is requested or the encode thread finishes, releasing the
+/// room while Windows is silent and re-pointing the player if a previously
+/// connected client drops away for long enough.
 ///
 /// Reconnection is best-effort telemetry: a transient client drop on the LAN
 /// should not end the session, and a debounce avoids thrashing on a clean
 /// disconnect that is immediately followed by teardown.
+///
+/// The two mechanisms have to be aware of each other, because releasing the
+/// room *causes* a client drop: without the `is_released` guard the reconnect
+/// logic would immediately grab the speakers back and idle release would never
+/// hold.
 fn supervise(
     server: &StreamServer,
     handle: &thread::JoinHandle<Result<()>>,
@@ -157,6 +182,7 @@ fn supervise(
     stream_url: &str,
     stop: &Arc<AtomicBool>,
     metrics: &Arc<SharedMetrics>,
+    idle: &IdleTracker,
 ) {
     const POLL: Duration = Duration::from_millis(50);
     const RECONNECT_DEBOUNCE: Duration = Duration::from_millis(750);
@@ -167,6 +193,42 @@ fn supervise(
 
     while !stop.load(Ordering::SeqCst) && !handle.is_finished() {
         thread::sleep(POLL);
+
+        match idle.poll() {
+            IdleAction::Release => {
+                tracing::info!("no audio; releasing the room");
+                if let Err(error) = control.stop() {
+                    tracing::warn!(%error, "failed to stop the player for idle release");
+                }
+                // The player disconnecting is the expected consequence, not a
+                // fault to reconnect from.
+                seen_client = false;
+                dropped_at = None;
+                continue;
+            }
+            IdleAction::Resume => {
+                tracing::info!("audio resumed; reclaiming the room");
+                match start_playback(control, stream_url, &content_type) {
+                    Ok(()) => metrics.inc_reconnects(),
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to resume playback after idle");
+                        // Try again on the next audible poll rather than
+                        // staying silently released for the rest of the
+                        // session.
+                        idle.mark_released_for_retry();
+                    }
+                }
+                seen_client = false;
+                dropped_at = None;
+                continue;
+            }
+            IdleAction::None => {}
+        }
+
+        // While released we deliberately have no client; that is not a drop.
+        if idle.is_released() {
+            continue;
+        }
 
         if server.metrics().connected_clients > 0 {
             seen_client = true;
@@ -184,6 +246,7 @@ fn supervise(
                 match start_playback(control, stream_url, &content_type) {
                     Ok(()) => {
                         metrics.inc_reconnects();
+                        idle.mark_resumed();
                         tracing::info!("re-pointed the player after a client drop");
                     }
                     Err(error) => tracing::warn!(%error, "player reconnect attempt failed"),
@@ -207,6 +270,7 @@ struct EncodeWorker {
     stop: Arc<AtomicBool>,
     metrics: Arc<SharedMetrics>,
     latency: Arc<LatencyAccumulator>,
+    idle: Arc<IdleTracker>,
 }
 
 impl EncodeWorker {
@@ -247,6 +311,10 @@ impl EncodeWorker {
                 Ok(Some(frame)) => {
                     let origin = frame.captured_at().unwrap_or_else(Instant::now);
                     self.metrics.inc_captured();
+                    // Observed before the pipeline, so the answer reflects what
+                    // Windows actually played rather than a resampler's
+                    // warm-up or the jitter buffer's fill state.
+                    self.idle.observe(&frame);
                     let processed = pipeline.process(frame)?;
                     self.publish(pipeline, processed, origin, out)?;
                 }

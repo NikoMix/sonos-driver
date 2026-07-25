@@ -9,6 +9,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -320,4 +321,103 @@ fn unsupported_profile_fails_before_touching_the_player() {
     let calls = calls.lock().expect("mock calls poisoned");
     assert_eq!(calls.set_uri, 0, "player was contacted despite a failure");
     assert_eq!(calls.play, 0, "player was started despite a failure");
+}
+
+/// A paced source that emits digital silence until `audible` is set, then a
+/// tone. Stands in for a Windows machine that nobody is playing anything on.
+struct QuietThenLoudSource {
+    inner: SyntheticSource,
+    audible: Arc<AtomicBool>,
+}
+
+impl QuietThenLoudSource {
+    fn new(audible: Arc<AtomicBool>) -> Self {
+        Self {
+            inner: SyntheticSource::new(48_000, 2, 440.0, 0.25, 480),
+            audible,
+        }
+    }
+}
+
+impl AudioSource for QuietThenLoudSource {
+    fn format(&self) -> AudioFormat {
+        self.inner.format()
+    }
+
+    fn read(&mut self) -> Result<Option<AudioFrame>> {
+        let frame = self.inner.read()?;
+        let Some(mut frame) = frame else {
+            return Ok(None);
+        };
+        if !self.audible.load(Ordering::SeqCst) {
+            frame.samples_mut().fill(0.0);
+        }
+        thread::sleep(frame.duration());
+        Ok(Some(frame))
+    }
+}
+
+/// Wait until `probe` holds, or fail with `what`.
+fn wait_until<F>(calls: &Arc<Mutex<MockCalls>>, timeout: Duration, what: &str, probe: F)
+where
+    F: Fn(&MockCalls) -> bool,
+{
+    let deadline = Instant::now() + timeout;
+    loop {
+        if probe(&calls.lock().expect("mock calls poisoned")) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn silence_releases_the_room_and_audio_reclaims_it() {
+    let mut config = harness_config(CodecProfile::L16Pcm);
+    // One second, the shortest the config granularity allows, to keep the test
+    // honest without making it slow.
+    config.idle.stop_after_secs = 1;
+
+    let audible = Arc::new(AtomicBool::new(false));
+    let source = QuietThenLoudSource::new(Arc::clone(&audible));
+    let mock = MockPlayer::new();
+    let calls = mock.calls();
+
+    let mut bridge = Bridge::new(config);
+    let stop = bridge.stop_handle();
+    let worker = thread::spawn(move || bridge.run_with(Box::new(source), Box::new(mock)));
+
+    // Playback starts immediately: the room is claimed before anyone knows
+    // whether there is anything to play.
+    wait_until(&calls, Duration::from_secs(10), "initial play", |c| {
+        c.play >= 1
+    });
+
+    // Silence must then hand it back, without ending the session.
+    wait_until(&calls, Duration::from_secs(10), "idle release", |c| {
+        c.stop >= 1
+    });
+    assert!(
+        !worker.is_finished(),
+        "the session ended instead of merely releasing the room"
+    );
+
+    // And sound must take it back.
+    audible.store(true, Ordering::SeqCst);
+    wait_until(&calls, Duration::from_secs(10), "idle resume", |c| {
+        c.play >= 2
+    });
+
+    stop.stop();
+    worker
+        .join()
+        .expect("session thread panicked")
+        .expect("session returned Ok");
+
+    let calls = calls.lock().expect("mock calls poisoned");
+    assert!(
+        calls.set_uri >= 2,
+        "resuming must re-point the player, not just press play"
+    );
 }

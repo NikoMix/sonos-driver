@@ -12,7 +12,8 @@
 use std::net::IpAddr;
 
 use audio_core::{
-    CaptureConfig, CodecProfile, Config, Error, PipelineConfig, Result, SonosConfig, StreamConfig,
+    CaptureConfig, CodecProfile, Config, Error, IdleConfig, PipelineConfig, Result, SonosConfig,
+    StreamConfig,
 };
 
 /// Every selectable [`CodecProfile`], in presentation order, for the picker.
@@ -146,6 +147,9 @@ impl SettingsForm {
                 seed_host,
                 discovery_timeout_secs,
             },
+            // Not exposed in the legacy GUI, which is a debug tool for a single
+            // room where holding the speakers for the session is the point.
+            idle: IdleConfig::default(),
         })
     }
 

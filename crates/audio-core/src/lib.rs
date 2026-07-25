@@ -31,7 +31,8 @@ mod transport;
 
 pub use codec::{CodecProfile, Encoder, LatencyClass};
 pub use config::{
-    CaptureConfig, Config, PipelineConfig, SonosConfig, StreamConfig, DEFAULT_STREAM_PORT,
+    CaptureConfig, Config, IdleConfig, PipelineConfig, SonosConfig, StreamConfig,
+    DEFAULT_STREAM_PORT,
 };
 pub use error::{Error, Result};
 pub use format::{AudioFormat, SampleFormat};
