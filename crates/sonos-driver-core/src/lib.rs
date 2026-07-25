@@ -23,11 +23,15 @@ pub use stream_server as server;
 
 mod latency;
 mod metrics;
+mod multiroom;
 mod player;
 mod session;
 
 pub use latency::ControllableLatency;
+pub use multiroom::{sessions_for, MultiRoomBridge, RoomSession};
 pub use player::PlayerControl;
+pub use sonos_vad_control as vad;
+pub use sonos_vad_endpoint as vad_endpoint;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -52,6 +56,14 @@ pub struct StopHandle {
 }
 
 impl StopHandle {
+    /// Wrap an existing shared stop flag.
+    ///
+    /// Used by [`MultiRoomBridge`] so one handle stops every room at once.
+    #[must_use]
+    pub(crate) fn from_flag(flag: Arc<AtomicBool>) -> Self {
+        Self { flag }
+    }
+
     /// Request that the associated bridge stop at the next opportunity.
     pub fn stop(&self) {
         self.flag.store(true, Ordering::SeqCst);
@@ -157,6 +169,15 @@ impl Bridge {
         StopHandle {
             flag: Arc::clone(&self.stop),
         }
+    }
+
+    /// Replace this bridge's stop flag with a shared one.
+    ///
+    /// [`MultiRoomBridge`] uses this so a single Ctrl-C tears down every room's
+    /// bridge at once. Must be called before [`run`](Self::run); any handle
+    /// obtained from [`stop_handle`](Self::stop_handle) beforehand is orphaned.
+    pub fn adopt_stop_flag(&mut self, flag: Arc<AtomicBool>) {
+        self.stop = flag;
     }
 
     /// The latency estimate for the configured streaming profile.

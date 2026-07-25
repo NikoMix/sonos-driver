@@ -1,0 +1,28 @@
+# Windows endpoint layer for the sonosvad kernel driver (ADR-0018).
+#
+# Enumerates the fixed render endpoints exposed by sonosvad.sys and renames them
+# to Sonos room names. The `unsafe` needed for the endpoint-property COM calls is
+# confined to the `sys` module.
+[package]
+name = "sonos-vad-endpoint"
+description = "Enumerates and renames the fixed Windows render endpoints exposed by the sonosvad kernel virtual-audio driver, binding each one to a discovered Sonos room."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+sonos-vad-control.workspace = true
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+windows-core.workspace = true
+
+[lints]
+workspace = true

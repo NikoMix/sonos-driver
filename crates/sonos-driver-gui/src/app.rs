@@ -377,6 +377,12 @@ impl GuiApp {
                 ui.text_edit_singleline(&mut form.uuid);
                 ui.end_row();
 
+                ui.label("Seed host").on_hover_text(
+                    "Address of any Sonos player. Use when SSDP multicast discovery is blocked.",
+                );
+                ui.text_edit_singleline(&mut form.seed_host);
+                ui.end_row();
+
                 ui.label("Bind address");
                 ui.text_edit_singleline(&mut form.bind_address);
                 ui.end_row();

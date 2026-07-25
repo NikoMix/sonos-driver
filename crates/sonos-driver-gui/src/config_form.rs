@@ -52,6 +52,11 @@ pub struct SettingsForm {
     pub room: String,
     /// Target device `UUID`; takes precedence over the room when set.
     pub uuid: String,
+    /// Address of a known Sonos player, used instead of SSDP multicast.
+    ///
+    /// Any single player reports the whole household over unicast HTTP, so this
+    /// is the escape hatch for networks where SSDP multicast does not work.
+    pub seed_host: String,
     /// Seconds to wait for `SSDP` discovery responses.
     pub discovery_timeout_secs: String,
 }
@@ -81,6 +86,7 @@ impl SettingsForm {
             port: config.stream.port.to_string(),
             room: config.sonos.room.clone().unwrap_or_default(),
             uuid: config.sonos.uuid.clone().unwrap_or_default(),
+            seed_host: config.sonos.seed_host.clone().unwrap_or_default(),
             discovery_timeout_secs: config.sonos.discovery_timeout_secs.to_string(),
         }
     }
@@ -102,6 +108,7 @@ impl SettingsForm {
         let bind_address = parse_bind_address(&self.bind_address)?;
         let room = optional_trimmed(&self.room);
         let uuid = optional_trimmed(&self.uuid);
+        let seed_host = optional_trimmed(&self.seed_host);
         let discovery_timeout_secs =
             parse_u32_or(&self.discovery_timeout_secs, 0, "discovery-timeout-secs")?;
 
@@ -136,6 +143,7 @@ impl SettingsForm {
             sonos: SonosConfig {
                 room,
                 uuid,
+                seed_host,
                 discovery_timeout_secs,
             },
         })

@@ -236,6 +236,11 @@ fn run_session(
 /// [`audio_core::Error::Control`] when the configured target cannot be found.
 fn resolve_controller(config: &SonosConfig) -> Result<SonosController> {
     let timeout = Duration::from_secs(u64::from(config.discovery_timeout_secs)).max(MIN_DISCOVERY);
+    let seed = config
+        .seed_host
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
 
     if let Some(uuid) = config
         .uuid
@@ -247,7 +252,7 @@ fn resolve_controller(config: &SonosConfig) -> Result<SonosController> {
         // and `uuid` when a room is picked, and a UUID can point at a
         // non-coordinator member (e.g. one half of a stereo pair) that ignores
         // transport commands.
-        return controller_for_uuid(timeout, uuid);
+        return controller_for_uuid(seed, timeout, uuid);
     }
 
     if let Some(room) = config
@@ -256,7 +261,7 @@ fn resolve_controller(config: &SonosConfig) -> Result<SonosController> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        return controller_for_room(timeout, room);
+        return controller_for_room(seed, timeout, room);
     }
 
     Err(Error::config(
@@ -310,6 +315,7 @@ mod tests {
         let config = SonosConfig {
             room: Some("   ".to_owned()),
             uuid: Some(String::new()),
+            seed_host: Some("  ".to_owned()),
             discovery_timeout_secs: 0,
         };
         assert!(matches!(resolve_controller(&config), Err(Error::Config(_))));

@@ -2773,6 +2773,8 @@ dependencies = [
  "audio-core 0.2.0",
  "audio-pipeline",
  "sonos-control",
+ "sonos-vad-control",
+ "sonos-vad-endpoint",
  "stream-server",
  "tracing",
 ]
@@ -2799,7 +2801,17 @@ name = "sonos-vad-control"
 version = "0.2.0"
 dependencies = [
  "serde",
- "serde_json",
+]
+
+[[package]]
+name = "sonos-vad-endpoint"
+version = "0.2.0"
+dependencies = [
+ "sonos-vad-control",
+ "thiserror 2.0.18",
+ "tracing",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]

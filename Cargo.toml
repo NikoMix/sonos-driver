@@ -27,6 +27,8 @@ audio-pipeline = { path = "crates/audio-pipeline", version = "0.2.0" }
 audio-codec = { path = "crates/audio-codec", version = "0.2.0" }
 stream-server = { path = "crates/stream-server", version = "0.2.0" }
 sonos-control = { path = "crates/sonos-control", version = "0.2.0" }
+sonos-vad-control = { path = "crates/sonos-vad-control", version = "0.2.0" }
+sonos-vad-endpoint = { path = "crates/sonos-vad-endpoint", version = "0.2.0" }
 sonos-driver-core = { path = "crates/sonos-driver-core", version = "0.2.0" }
 
 # Shared third-party dependencies. Versions are intentionally permissive

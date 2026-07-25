@@ -14,6 +14,7 @@
 mod cli;
 mod commands;
 mod config;
+mod vad;
 
 use std::process::ExitCode;
 
@@ -23,10 +24,11 @@ use sonos_driver_core::core::Error as CoreError;
 use crate::cli::{Cli, Command};
 
 /// Crate targets whose `tracing` events the default log filter surfaces.
-const TRACING_CRATES: [&str; 8] = [
+const TRACING_CRATES: [&str; 9] = [
     "sonos_driver_cli",
     "sonos_driver_core",
     "sonos_control",
+    "sonos_vad_endpoint",
     "audio_capture",
     "audio_codec",
     "audio_pipeline",
@@ -53,6 +55,7 @@ fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Command::List(args) => commands::run_list(args),
         Command::Stream(args) => commands::run_stream(cli.config.as_deref(), args),
         Command::Stop(args) => commands::run_stop(args),
+        Command::Vad(action) => vad::run_vad(action, cli.config.as_deref()),
         Command::Config(action) => commands::run_config(action, cli.config.as_deref()),
     }
 }

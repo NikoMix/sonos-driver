@@ -91,6 +91,11 @@ impl PlayerControl for SonosController {
 /// [`Error::Control`] when discovery finds no matching device.
 pub(crate) fn resolve_target(config: &SonosConfig) -> Result<SonosController> {
     let timeout = Duration::from_secs(u64::from(config.discovery_timeout_secs)).max(MIN_DISCOVERY);
+    let seed = config
+        .seed_host
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
 
     if let Some(uuid) = config
         .uuid
@@ -101,7 +106,7 @@ pub(crate) fn resolve_target(config: &SonosConfig) -> Result<SonosController> {
         // A UUID may identify a non-coordinator member (e.g. one speaker of a
         // stereo pair); resolve it to the group coordinator that accepts
         // transport commands.
-        return controller_for_uuid(timeout, uuid);
+        return controller_for_uuid(seed, timeout, uuid);
     }
 
     if let Some(room) = config
@@ -110,7 +115,7 @@ pub(crate) fn resolve_target(config: &SonosConfig) -> Result<SonosController> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        return controller_for_room(timeout, room);
+        return controller_for_room(seed, timeout, room);
     }
 
     Err(Error::config(
@@ -137,6 +142,7 @@ mod tests {
         let config = SonosConfig {
             room: Some("   ".to_owned()),
             uuid: Some(String::new()),
+            seed_host: None,
             discovery_timeout_secs: 0,
         };
         assert!(matches!(resolve_target(&config), Err(Error::Config(_))));

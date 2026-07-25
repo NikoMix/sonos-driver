@@ -98,6 +98,14 @@ pub struct SonosConfig {
     pub room: Option<String>,
     /// Target device UUID, taking precedence over `room` when set.
     pub uuid: Option<String>,
+    /// Address of a known Sonos player used to enumerate the household over
+    /// plain unicast HTTP instead of SSDP multicast.
+    ///
+    /// SSDP needs multicast, which NAT'd hypervisor networks (Windows Sandbox,
+    /// WSL, Docker), VLAN-segmented or guest wifi, and APs without working IGMP
+    /// all drop. Any single player knows the whole topology, so one reachable
+    /// address is enough. `None` uses SSDP.
+    pub seed_host: Option<String>,
     /// Seconds to wait for SSDP discovery responses.
     pub discovery_timeout_secs: u32,
 }
