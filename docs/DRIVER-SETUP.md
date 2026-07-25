@@ -33,7 +33,7 @@
 | **Administrator** PowerShell | Every step below is elevated. |
 | **Windows Driver Kit (WDK)** + matching SDK, or the **EWDK** | C/C++ KMDF/ACX toolchain. Not bundled; install from Microsoft. |
 | **Visual Studio Build Tools** (MSVC) | Same toolset the Rust build already uses. |
-| **Microsoft Sysvad** sample source | MIT-licensed base — see [`../driver/DERIVATION.md`](../driver/DERIVATION.md). |
+| **Microsoft `simpleaudiosample`** sample source | **MS-PL** base, already vendored under `driver/sonosvad/Source/` — see [`../driver/DERIVATION.md`](../driver/DERIVATION.md). |
 | A free afternoon and a **reboot** | Test-signing requires a restart to take effect. |
 
 The helper scripts referenced below live in [`../driver/scripts/`](../driver/scripts/).
@@ -69,14 +69,20 @@ output folder is git-ignored.
 
 ```powershell
 ./driver/scripts/Build-Driver.ps1 -Configuration Release -Platform x64
-# Wraps msbuild against the Sysvad-derived project (see driver/DERIVATION.md).
+# Wraps msbuild against the vendored driver project (see driver/DERIVATION.md).
 # Requires the WDK/EWDK on PATH. Produces sonosvad.sys + sonosvad.inf.
 ```
 
-> The repository ships the **INF, derivation guide, and scripts**, not a
-> ready-to-compile `.sys`. You assemble the C/C++ sources by applying the changes
-> in [`../driver/DERIVATION.md`](../driver/DERIVATION.md) to the Sysvad sample.
-> This keeps the repo honest (no vendored half-driver) and the licensing clean.
+> The driver **source is vendored** under `driver/sonosvad/Source/` and builds as
+> it stands — there is nothing to assemble by hand.
+> [`../driver/DERIVATION.md`](../driver/DERIVATION.md) records what was changed in
+> Microsoft's `simpleaudiosample` (MS-PL) to produce it, and how to re-derive
+> against a newer upstream sample.
+>
+> **Build output must be on a local volume.** `stampinf` rewrites the INF through
+> a memory-mapped view; on a network or VM-shared folder that write is silently
+> discarded while `stampinf` still reports success, leaving `$ARCH$` unresolved
+> and InfVerif failing with `error 1274`.
 
 ## 4. Sign and install
 

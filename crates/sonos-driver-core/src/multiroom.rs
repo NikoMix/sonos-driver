@@ -130,6 +130,19 @@ impl MultiRoomBridge {
         StopHandle::from_flag(Arc::clone(&self.stop))
     }
 
+    /// Share an existing handle's stop flag instead of this supervisor's own.
+    ///
+    /// A long-running host -- the Windows service -- owns one stop signal but
+    /// builds a fresh supervisor on every re-plan. Without this, a stop arriving
+    /// mid-cycle would be delivered to a handle nobody is watching, and the
+    /// service would hang until the SCM killed it.
+    ///
+    /// Any handle previously returned by [`stop_handle`](Self::stop_handle) is
+    /// detached by this call, so adopt before handing handles out.
+    pub fn adopt_stop_handle(&mut self, handle: &StopHandle) {
+        self.stop = handle.flag();
+    }
+
     /// Bind the discovered rooms to `sonosvad` endpoints and stream to all of
     /// them until stopped.
     ///

@@ -15,22 +15,31 @@ the OS mixer.
   driver requires the full **WDK/EWDK**, an elevated shell, and a reboot for
   test-signing. The repository's pipeline cannot do any of that, so the driver
   build is a **documented local, owner-side step**.
-- **This folder intentionally does not contain a ready-to-compile `.sys` or a
-  hand-written full miniport.** Shipping a half-written kernel driver would be
-  dishonest and a licensing hazard. Instead it provides:
-  - [`DERIVATION.md`](./DERIVATION.md) — the exact, reviewable set of changes to
-    apply to Microsoft's **Sysvad** sample (MIT-licensed) to produce this driver.
-  - [`sonosvad.inf`](./sonosvad.inf) — the installation manifest (device class,
-    install sections, endpoint topology hooks).
+- **This folder now contains the full derived driver source** under
+  [`sonosvad/Source/`](./sonosvad/Source), which builds clean to a 49 KB
+  `sonosvad.sys`. It also provides:
+  - [`DERIVATION.md`](./DERIVATION.md) — what was changed in Microsoft's
+    **`simpleaudiosample`** sample (**MS-PL**) to produce this driver, and why.
+  - [`sonosvad/Source/Main/sonosvad.inx`](./sonosvad/Source/Main/sonosvad.inx) —
+    the installation manifest template (device class, install sections, the eight
+    render endpoints), stamped into `sonosvad.inf` at build time.
   - [`scripts/`](./scripts) — PowerShell helpers for the whole lifecycle
-    (test-signing on/off, test cert, build, sign, install, uninstall).
+    (test-signing on/off, test cert, build, sign, static validation, install,
+    uninstall).
 
 ## Provenance & licensing
 
-The driver is **derived from Microsoft's Sysvad sample**
-(`Windows-driver-samples`, **MIT-licensed** — redistributable, no purchase). The
-MIT terms require keeping Microsoft's copyright notice with any derived source;
-record it at the top of every Sysvad-derived file you create under this folder.
+The driver is **derived from Microsoft's `simpleaudiosample` sample**
+(`Windows-driver-samples`), which is licensed under the **Microsoft Public
+License (MS-PL)** — redistributable, no purchase.
+
+MS-PL §3(D) requires that any portion we distribute **in source form** stays
+under MS-PL and ships with a complete copy of the licence, so every derived file
+carries an MS-PL header and
+[`sonosvad/LICENSE-MS-PL.txt`](./sonosvad/LICENSE-MS-PL.txt) is committed beside
+them. §4 grants no trademark rights, so nothing user-visible references
+Microsoft. Full detail in [`DERIVATION.md`](./DERIVATION.md).
+
 No paid component is introduced: the WDK is a free Microsoft SDK, and personal-use
 **test-signing is free**. See [ADR-0017](../docs/adr/0017-kernel-virtual-audio-driver.md)
 §5 and ADR-0014 §3 for the signing rationale and the distribution boundary.

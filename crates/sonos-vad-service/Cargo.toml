@@ -1,0 +1,33 @@
+[package]
+name = "sonos-vad-service"
+description = "Headless Windows service that streams each sonosvad endpoint to its Sonos room"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "sonosvad-svc"
+path = "src/main.rs"
+
+[dependencies]
+audio-core.workspace = true
+sonos-driver-core.workspace = true
+
+anyhow.workspace = true
+clap.workspace = true
+ctrlc.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-service.workspace = true
+
+[lints]
+workspace = true

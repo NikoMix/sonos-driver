@@ -30,6 +30,17 @@
 .PARAMETER SkipDeviceNode
     Stage the package only. Use when the device node already exists and you are
     just updating the binary.
+.PARAMETER SkipService
+    Do not register the sonosvad streaming service. The endpoints will appear in
+    Sound but stay silent until something binds and streams them, which is what
+    you want when driving the pipeline by hand with `sonos-driver vad`.
+.PARAMETER ServiceExe
+    Path to sonosvad-svc.exe. The registered service command line points at this
+    exact path, so put the binary where it will stay before installing.
+.PARAMETER SeedHost
+    IP address of any one Sonos player. Baked into the service command line, for
+    networks where SSDP multicast is filtered and discovery would otherwise find
+    nothing.
 .NOTES
     Not run by CI. Requires an elevated PowerShell.
 #>
@@ -38,7 +49,10 @@ param(
     [string] $InfPath = (Join-Path $PSScriptRoot '..\sonosvad.inf'),
     [string] $HardwareId = 'ROOT\sonosvad',
     [string] $InstanceId = 'sonosvad',
-    [switch] $SkipDeviceNode
+    [switch] $SkipDeviceNode,
+    [switch] $SkipService,
+    [string] $ServiceExe = (Join-Path $PSScriptRoot '..\..\target\release\sonosvad-svc.exe'),
+    [string] $SeedHost
 )
 
 Set-StrictMode -Version Latest
@@ -96,5 +110,31 @@ else {
     Write-Host "Device node $($node.InstanceId) started." -ForegroundColor Green
 }
 
+# The service is registered only after the device node exists, so its first
+# start finds endpoints to bind instead of entering its retry loop.
+if (-not $SkipService) {
+    Write-Host ''
+    Write-Host '-- Registering the streaming service --' -ForegroundColor Cyan
+
+    if (-not (Test-Path -LiteralPath $ServiceExe)) {
+        Write-Warning "sonosvad-svc.exe not found at '$ServiceExe'. Build it with 'cargo build --release -p sonos-vad-service' and re-run with -ServiceExe, or register it later. The driver itself is installed."
+    }
+    else {
+        $serviceArgs = @('install')
+        if ($SeedHost) { $serviceArgs += @('--seed-host', $SeedHost) }
+        $install = Invoke-NativeCommand -Exe $ServiceExe -Arguments $serviceArgs
+        Write-Host $install.Output
+        if ($install.ExitCode -ne 0) {
+            Write-Warning "Service registration failed with exit code $($install.ExitCode). The driver is installed; register the service manually with: $ServiceExe install"
+        }
+        else {
+            Write-Host 'Service sonosvad registered (auto-start, LocalSystem).' -ForegroundColor Green
+            Write-Host "Start it now with: Start-Service sonosvad"
+        }
+    }
+}
+
+Write-Host ''
 Write-Host 'Open mmsys.cpl to confirm the "Sonos Output N" endpoints appear.' -ForegroundColor Green
-Write-Host 'Then run (elevated): sonos-driver vad bind'
+Write-Host 'The service renames them to your Sonos rooms once started; to do it'
+Write-Host 'by hand instead, run (elevated): sonos-driver vad bind'

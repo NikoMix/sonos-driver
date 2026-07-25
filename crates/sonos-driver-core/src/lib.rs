@@ -25,11 +25,13 @@ mod latency;
 mod metrics;
 mod multiroom;
 mod player;
+mod rooms;
 mod session;
 
 pub use latency::ControllableLatency;
 pub use multiroom::{sessions_for, MultiRoomBridge, RoomSession};
 pub use player::PlayerControl;
+pub use rooms::{discover_rooms, is_non_coordinator, rooms_from_topology};
 pub use sonos_vad_control as vad;
 pub use sonos_vad_endpoint as vad_endpoint;
 
@@ -74,6 +76,32 @@ impl StopHandle {
     #[must_use]
     pub fn is_stop_requested(&self) -> bool {
         self.flag.load(Ordering::SeqCst)
+    }
+
+    /// The shared flag behind this handle.
+    ///
+    /// Lets [`MultiRoomBridge`] adopt a caller-owned stop signal.
+    #[must_use]
+    pub(crate) fn flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.flag)
+    }
+
+    /// A handle that is not yet stopped and is owned by the caller.
+    ///
+    /// Hosts that outlive any single bridge -- the Windows service, which
+    /// re-plans on household changes -- create the signal first and hand it to
+    /// each supervisor via [`MultiRoomBridge::adopt_stop_handle`].
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            flag: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+impl Default for StopHandle {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

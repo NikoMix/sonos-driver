@@ -30,6 +30,7 @@ sonos-control = { path = "crates/sonos-control", version = "0.2.0" }
 sonos-vad-control = { path = "crates/sonos-vad-control", version = "0.2.0" }
 sonos-vad-endpoint = { path = "crates/sonos-vad-endpoint", version = "0.2.0" }
 sonos-driver-core = { path = "crates/sonos-driver-core", version = "0.2.0" }
+sonos-vad-service = { path = "crates/sonos-vad-service", version = "0.2.0" }
 
 # Shared third-party dependencies. Versions are intentionally permissive
 # (major-version floors) and locked precisely by Cargo.lock; `cargo update`
@@ -111,6 +112,15 @@ windows = { version = "0.62", features = [
 # to the exact same release as `windows` so Cargo unifies the two and the COM
 # vtable/`IUnknownImpl` types stay identical. MIT/Apache-licensed.
 windows-core = { version = "0.62", default-features = true }
+
+# Windows Service Control Manager integration for the headless `sonosvad-svc`
+# host (WS-K). Hand-rolling `StartServiceCtrlDispatcherW` +
+# `RegisterServiceCtrlHandlerExW` + the `SetServiceStatus` state machine is
+# perfectly possible, but the failure mode of getting the checkpoint/wait-hint
+# transitions subtly wrong is a service the SCM believes is hung (error 1053) --
+# so this is exactly the fiddly, well-bounded problem a maintained crate should
+# own. MIT OR Apache-2.0, maintained by Mullvad, cargo-deny validated.
+windows-service = "0.8"
 
 # Desktop GUI stack for the `sonos-driver-gui` system-tray application (WS-J).
 # Every crate here is permissively licensed (MIT OR Apache-2.0) and cargo-deny

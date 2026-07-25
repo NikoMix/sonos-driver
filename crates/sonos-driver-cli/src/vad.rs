@@ -18,7 +18,7 @@ use sonos_driver_core::vad_endpoint::{
     factory_name_for_slot, plan_bindings, SystemEndpoints, VadEndpoint, VadEndpoints,
     DEFAULT_ADAPTER_NAME,
 };
-use sonos_driver_core::{control, MultiRoomBridge, RoomSession};
+use sonos_driver_core::{MultiRoomBridge, RoomSession};
 
 use crate::cli::{VadBindArgs, VadCommand, VadProbeArgs, VadServeArgs, VadStatusArgs};
 use crate::commands::install_ctrl_c;
@@ -429,85 +429,17 @@ fn effective_serve_config(
     Ok(config)
 }
 
-/// Discover Sonos rooms, de-duplicated to one entry per zone-group coordinator
-/// where the topology is available.
+/// Discover Sonos rooms, de-duplicated to one entry per zone-group coordinator.
 ///
-/// Grouped players share one transport, so binding every member would create
-/// several Windows outputs that all fight over the same speakers. A four-piece
-/// home-theatre set (soundbar + sub + two surrounds) is a single room, not four.
+/// Thin wrapper adding CLI error context; the logic is shared with the Windows
+/// service so both agree on which players become Windows outputs.
 fn discover_rooms(seed: Option<&str>, timeout: Duration) -> anyhow::Result<Vec<RoomKey>> {
-    let devices =
-        control::discover_household(seed, timeout).context("discovering Sonos devices")?;
-    if devices.is_empty() {
-        bail!("no Sonos devices were found on the local network");
-    }
-
-    let groups = control::household_zone_groups(seed, timeout).unwrap_or_else(|err| {
-        tracing::debug!(%err, "zone-group topology unavailable; binding every player");
-        Vec::new()
-    });
-
-    let mut rooms: Vec<RoomKey> = Vec::new();
-    for device in &devices {
-        if is_non_coordinator(&groups, &device.uuid) {
-            tracing::debug!(room = %device.room_name, "skipping grouped non-coordinator");
-            continue;
-        }
-        rooms.push(RoomKey::new(device.uuid.clone(), device.room_name.clone()));
-    }
-
-    // Deterministic order keeps slot assignment stable between runs.
-    rooms.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.uuid.cmp(&b.uuid)));
-    Ok(rooms)
-}
-
-/// Whether `uuid` belongs to a zone group but is not its coordinator.
-fn is_non_coordinator(groups: &[control::ZoneGroup], uuid: &str) -> bool {
-    groups.iter().any(|group| {
-        group.members.len() > 1
-            && group.contains_uuid(uuid)
-            && !group.coordinator_uuid.eq_ignore_ascii_case(uuid)
-    })
+    sonos_driver_core::discover_rooms(seed, timeout).context("discovering Sonos rooms")
 }
 
 #[cfg(test)]
 mod tests {
-    use sonos_driver_core::control::{ZoneGroup, ZoneGroupMember};
-
     use super::*;
-
-    fn member(uuid: &str) -> ZoneGroupMember {
-        ZoneGroupMember {
-            uuid: uuid.to_owned(),
-            zone_name: uuid.to_owned(),
-            location: "http://192.168.1.10:1400/xml/device_description.xml".to_owned(),
-        }
-    }
-
-    fn group(coordinator: &str, members: &[&str]) -> ZoneGroup {
-        ZoneGroup {
-            id: format!("{coordinator}:1"),
-            coordinator_uuid: coordinator.to_owned(),
-            members: members.iter().copied().map(member).collect(),
-        }
-    }
-
-    #[test]
-    fn a_lone_player_is_never_treated_as_a_non_coordinator() {
-        assert!(!is_non_coordinator(&[group("A", &["A"])], "A"));
-    }
-
-    #[test]
-    fn grouped_members_other_than_the_coordinator_are_skipped() {
-        let groups = [group("A", &["A", "B"])];
-        assert!(!is_non_coordinator(&groups, "A"));
-        assert!(is_non_coordinator(&groups, "B"));
-    }
-
-    #[test]
-    fn unknown_uuids_are_left_alone() {
-        assert!(!is_non_coordinator(&[group("A", &["A", "B"])], "Z"));
-    }
 
     #[test]
     fn serve_flags_override_the_config_file() {
