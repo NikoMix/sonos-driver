@@ -77,6 +77,16 @@ pub struct BindingPlan {
     pub binds: Vec<Binding>,
     /// Rooms that could not be placed because every slot was taken.
     pub unplaced: usize,
+    /// Endpoint ids to make visible in the Windows sound UI, because a room is
+    /// bound to them but Windows currently has them disabled.
+    pub show: Vec<String>,
+    /// Endpoint ids to hide from the Windows sound UI, because no room is bound
+    /// to them.
+    ///
+    /// Empty unless [`plan_bindings_with`] was asked to hide spares: the driver
+    /// ships a fixed pool of slots, so without this a household with four rooms
+    /// leaves "Sonos Output 5" through "8" cluttering the sound picker forever.
+    pub hide: Vec<String>,
 }
 
 /// Plans the renames that converge `current` onto `rooms`.
@@ -90,6 +100,21 @@ pub struct BindingPlan {
 /// ignored entirely.
 #[must_use]
 pub fn plan_bindings(current: &[VadEndpoint], rooms: &[RoomKey]) -> BindingPlan {
+    plan_bindings_with(current, rooms, false)
+}
+
+/// [`plan_bindings`], additionally hiding the endpoints no room was bound to
+/// when `hide_spares` is set.
+///
+/// The driver exposes a fixed pool of slots, so a household smaller than the
+/// pool always leaves some over. Hiding them is what makes the sound picker
+/// show exactly the user's rooms and nothing else.
+#[must_use]
+pub fn plan_bindings_with(
+    current: &[VadEndpoint],
+    rooms: &[RoomKey],
+    hide_spares: bool,
+) -> BindingPlan {
     let mut slots: Vec<&VadEndpoint> = current
         .iter()
         .filter(|e| slot_from_factory_name(&e.device_desc).is_some())
@@ -151,14 +176,45 @@ pub fn plan_bindings(current: &[VadEndpoint], rooms: &[RoomKey]) -> BindingPlan 
                 name: name.clone(),
                 rename_needed: endpoint.friendly_name != *name,
             });
-        } else if endpoint.friendly_name != endpoint.device_desc {
-            plan.releases.push(Release {
-                device_id: endpoint.device_id.clone(),
-                name: endpoint.device_desc.clone(),
-            });
+            // A room cannot be selected in Windows while its endpoint is
+            // disabled, so an endpoint we hid on an earlier tick has to come
+            // back the moment a room needs it. Only a *disabled* endpoint is
+            // revived: an unplugged or not-present one is Windows' business.
+            if endpoint.disabled {
+                plan.show.push(endpoint.device_id.clone());
+            }
+        } else {
+            if endpoint.friendly_name != endpoint.device_desc {
+                plan.releases.push(Release {
+                    device_id: endpoint.device_id.clone(),
+                    name: endpoint.device_desc.clone(),
+                });
+            }
+            if hide_spares && endpoint.active {
+                plan.hide.push(endpoint.device_id.clone());
+            }
         }
     }
 
+    plan
+}
+
+/// The plan that undoes everything this crate ever did: factory names back on
+/// every renamed slot, and every slot we disabled made visible again.
+///
+/// [`plan_bindings_with`] with an empty room set restores names but *not*
+/// visibility, because from its point of view a nameless spare is exactly what
+/// should stay hidden. Uninstall needs the opposite: leaving `DeviceState=2`
+/// behind would strand disabled ghost endpoints in the registry, which outlive
+/// the driver and cannot be re-enabled through any UI once its INF is gone.
+#[must_use]
+pub fn plan_release_all(current: &[VadEndpoint]) -> BindingPlan {
+    let mut plan = plan_bindings_with(current, &[], false);
+    plan.show = current
+        .iter()
+        .filter(|e| slot_from_factory_name(&e.device_desc).is_some() && e.disabled)
+        .map(|e| e.device_id.clone())
+        .collect();
     plan
 }
 
@@ -174,6 +230,16 @@ mod tests {
             adapter: DEFAULT_ADAPTER_NAME.to_owned(),
             slot: Some(slot),
             active: true,
+            disabled: false,
+        }
+    }
+
+    /// An endpoint we previously hid, as `list()` would report it back.
+    fn hidden_endpoint(slot: u32, friendly: &str) -> VadEndpoint {
+        VadEndpoint {
+            active: false,
+            disabled: true,
+            ..endpoint(slot, friendly)
         }
     }
 
@@ -262,5 +328,45 @@ mod tests {
         ];
         let plan = plan_bindings(&current, &[RoomKey::new("u1", "Kitchen")]);
         assert_eq!(plan.binds[0].device_id, "id-1");
+    }
+
+    #[test]
+    fn release_all_restores_names_and_reveals_hidden_slots() {
+        let current = vec![
+            endpoint(1, "Kitchen"),
+            hidden_endpoint(2, "Sonos Output 2"),
+            hidden_endpoint(3, "Sonos Output 3"),
+        ];
+
+        let plan = plan_release_all(&current);
+
+        // Only slot 1 carries a non-factory name, so only it needs renaming...
+        assert_eq!(
+            plan.releases
+                .iter()
+                .map(|r| &r.device_id)
+                .collect::<Vec<_>>(),
+            vec!["id-1"]
+        );
+        // ...but every slot we disabled has to come back, or uninstalling the
+        // driver would strand them disabled forever.
+        assert_eq!(plan.show, vec!["id-2", "id-3"]);
+        assert!(plan.hide.is_empty());
+        assert!(plan.binds.is_empty());
+    }
+
+    #[test]
+    fn release_all_leaves_endpoints_windows_disabled_for_other_reasons_alone() {
+        // Not disabled, just absent: forcing DeviceState=ACTIVE here would put a
+        // phantom output in the picker for hardware that is not present.
+        let unplugged = VadEndpoint {
+            active: false,
+            disabled: false,
+            ..endpoint(2, "Sonos Output 2")
+        };
+
+        let plan = plan_release_all(&[endpoint(1, "Sonos Output 1"), unplugged]);
+
+        assert!(plan.show.is_empty());
     }
 }

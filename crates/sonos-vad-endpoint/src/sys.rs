@@ -11,10 +11,13 @@ use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Devices::FunctionDiscovery::{
     PKEY_DeviceInterface_FriendlyName, PKEY_Device_DeviceDesc, PKEY_Device_FriendlyName,
 };
-use windows::Win32::Foundation::{E_ACCESSDENIED, E_OUTOFMEMORY, PROPERTYKEY, RPC_E_CHANGED_MODE};
+use windows::Win32::Foundation::{
+    ERROR_ACCESS_DENIED, E_ACCESSDENIED, E_OUTOFMEMORY, PROPERTYKEY, RPC_E_CHANGED_MODE,
+    WIN32_ERROR,
+};
 use windows::Win32::Media::Audio::{
     eRender, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE,
-    DEVICE_STATEMASK_ALL, DEVICE_STATE_ACTIVE,
+    DEVICE_STATEMASK_ALL, DEVICE_STATE_ACTIVE, DEVICE_STATE_DISABLED,
 };
 use windows::Win32::System::Com::StructuredStorage::{
     PropVariantToStringAlloc, PROPVARIANT, PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0,
@@ -22,6 +25,9 @@ use windows::Win32::System::Com::StructuredStorage::{
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemAlloc, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
     COINIT_MULTITHREADED, STGM_READ, STGM_READWRITE,
+};
+use windows::Win32::System::Registry::{
+    RegCloseKey, RegOpenKeyExW, RegSetValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_SET_VALUE, REG_DWORD,
 };
 use windows::Win32::System::Variant::VT_LPWSTR;
 use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
@@ -189,6 +195,7 @@ pub(crate) fn list(adapter: &str) -> Result<Vec<VadEndpoint>> {
             adapter: interface_name,
             friendly_name,
             active: state == DEVICE_STATE_ACTIVE,
+            disabled: state == DEVICE_STATE_DISABLED,
         });
     }
 
@@ -279,9 +286,101 @@ pub(crate) fn rename(device_id: &str, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// The `MMDevices` key holding per-endpoint state, relative to `HKEY_LOCAL_MACHINE`.
+const MMDEVICES_RENDER: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render";
+
+/// Registry value holding an endpoint's `DEVICE_STATE_XXX`.
+const DEVICE_STATE_VALUE: &str = "DeviceState";
+
+/// The registry subkey name for `device_id`.
+///
+/// An endpoint id is `{0.0.0.00000000}.{guid}`: a container-class GUID, a dot,
+/// then the endpoint GUID. Only the second half names the `MMDevices` subkey.
+pub(crate) fn endpoint_subkey(device_id: &str) -> Option<&str> {
+    let rest = device_id.split_once("}.").map(|(_, rest)| rest)?;
+    // Reject anything that is not a brace-delimited GUID, so a malformed id can
+    // never be concatenated into a registry path.
+    (rest.starts_with('{') && rest.ends_with('}') && !rest[1..].contains('{')).then_some(rest)
+}
+
+/// Show or hide `device_id` in the Windows sound UI.
+///
+/// Writes `DeviceState` under the endpoint's `MMDevices` key: `1`
+/// (`DEVICE_STATE_ACTIVE`) or `2` (`DEVICE_STATE_DISABLED`). This is the same
+/// state the Sound control panel's Enable/Disable toggles, and the same one
+/// `IMMDeviceEnumerator` filters on, so a disabled endpoint disappears from
+/// every picker and from app enumeration.
+///
+/// Done through the registry rather than `IPropertyStore` because endpoint
+/// *state* is not an endpoint property: the only API that sets it is the
+/// undocumented `IPolicyConfig`, whose vtable has changed between Windows
+/// releases. The registry value is stable, and audiosrv reads it when it builds
+/// its endpoint list.
+///
+/// Needs elevation, and takes effect when the audio service next reloads the
+/// endpoint -- immediately for a device that is about to be re-enumerated,
+/// otherwise at the next audiosrv restart.
+pub(crate) fn set_visible(device_id: &str, visible: bool) -> Result<()> {
+    let subkey = endpoint_subkey(device_id).ok_or_else(|| Error::NotFound(device_id.to_owned()))?;
+    let path = widen(&format!(r"{MMDEVICES_RENDER}\{subkey}"));
+    let value_name = widen(DEVICE_STATE_VALUE);
+    let state: u32 = if visible {
+        DEVICE_STATE_ACTIVE.0
+    } else {
+        DEVICE_STATE_DISABLED.0
+    };
+
+    let mut key = HKEY::default();
+    // SAFETY: `path` is a NUL-terminated wide string alive for the call, and
+    // `key` is a valid out-pointer. The handle is closed below on every path.
+    let status = unsafe {
+        RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(path.as_ptr()),
+            None,
+            KEY_SET_VALUE,
+            &raw mut key,
+        )
+    };
+    if status.is_err() {
+        return Err(registry_error("RegOpenKeyExW(MMDevices endpoint)", status));
+    }
+
+    let bytes = state.to_ne_bytes();
+    // SAFETY: `key` is open with KEY_SET_VALUE, `value_name` is NUL-terminated
+    // and alive for the call, and `bytes` is exactly the four bytes a REG_DWORD
+    // requires.
+    let status = unsafe {
+        RegSetValueExW(
+            key,
+            PCWSTR(value_name.as_ptr()),
+            None,
+            REG_DWORD,
+            Some(&bytes),
+        )
+    };
+    // SAFETY: `key` came from a successful `RegOpenKeyExW` and is not used again.
+    let _ = unsafe { RegCloseKey(key) };
+
+    if status.is_err() {
+        return Err(registry_error("RegSetValueExW(DeviceState)", status));
+    }
+    Ok(())
+}
+
+/// Wrap a registry `WIN32_ERROR`, promoting access denied like [`win`] does.
+fn registry_error(call: &'static str, status: WIN32_ERROR) -> Error {
+    if status == ERROR_ACCESS_DENIED {
+        return Error::AccessDenied;
+    }
+    Error::Windows {
+        call,
+        source: Box::new(windows::core::Error::from(status.to_hresult())),
+    }
+}
 #[cfg(test)]
 mod tests {
-    use super::{lpwstr_propvariant, take_wide, widen};
+    use super::{endpoint_subkey, lpwstr_propvariant, take_wide, widen};
     use windows::Win32::System::Com::StructuredStorage::PropVariantToStringAlloc;
     use windows::Win32::System::Variant::VT_LPWSTR;
 
@@ -314,5 +413,28 @@ mod tests {
     fn widen_is_nul_terminated() {
         assert_eq!(widen(""), vec![0]);
         assert_eq!(widen("ab"), vec![u16::from(b'a'), u16::from(b'b'), 0]);
+    }
+
+    #[test]
+    fn endpoint_subkey_takes_the_endpoint_guid_only() {
+        assert_eq!(
+            endpoint_subkey("{0.0.0.00000000}.{a1b2c3d4-0000-1111-2222-333344445555}"),
+            Some("{a1b2c3d4-0000-1111-2222-333344445555}")
+        );
+    }
+
+    #[test]
+    fn endpoint_subkey_rejects_ids_that_could_escape_the_key() {
+        // Nothing here may ever be pasted into a registry path.
+        for bad in [
+            "",
+            "not-an-endpoint-id",
+            "{0.0.0.00000000}",
+            r"{0.0.0.00000000}.{guid}\..\..\Capture",
+            "{0.0.0.00000000}.{guid}{extra}",
+            "{0.0.0.00000000}.guid",
+        ] {
+            assert_eq!(endpoint_subkey(bad), None, "accepted {bad:?}");
+        }
     }
 }

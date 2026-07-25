@@ -171,13 +171,32 @@ impl MultiRoomBridge {
         endpoints: &E,
         rooms: &[sonos_vad_control::RoomKey],
     ) -> Result<Vec<RoomSession>> {
+        self.plan_with(endpoints, rooms, false)
+    }
+
+    /// [`MultiRoomBridge::plan`], additionally hiding the driver's spare
+    /// endpoints from the Windows sound UI when `hide_spares` is set.
+    ///
+    /// The driver ships a fixed pool of slots, so a household with four rooms
+    /// would otherwise leave "Sonos Output 5" through "8" in the sound picker.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Control`] when binding fails, and [`Error::Config`]
+    /// when no room could be bound.
+    pub fn plan_with<E: VadEndpoints + ?Sized>(
+        &self,
+        endpoints: &E,
+        rooms: &[sonos_vad_control::RoomKey],
+        hide_spares: bool,
+    ) -> Result<Vec<RoomSession>> {
         if rooms.is_empty() {
             return Err(Error::config(
                 "no Sonos rooms were discovered; nothing to bind",
             ));
         }
 
-        let bindings = sonos_vad_endpoint::bind_rooms(endpoints, rooms)
+        let bindings = sonos_vad_endpoint::bind_rooms_with(endpoints, rooms, hide_spares)
             .map_err(|err| Error::control(format!("binding Sonos rooms to endpoints: {err}")))?;
 
         let sessions = sessions_for(&bindings, self.config.stream.port)?;
@@ -307,6 +326,7 @@ mod tests {
                         adapter: DEFAULT_ADAPTER_NAME.to_owned(),
                         slot: Some(slot),
                         active: true,
+                        disabled: false,
                     }
                 })
                 .collect();
@@ -326,6 +346,18 @@ mod tests {
             for endpoint in endpoints.iter_mut() {
                 if endpoint.device_id == device_id {
                     endpoint.friendly_name = name.to_owned();
+                    return Ok(());
+                }
+            }
+            Err(sonos_vad_endpoint::Error::NotFound(device_id.to_owned()))
+        }
+
+        fn set_visible(&self, device_id: &str, visible: bool) -> sonos_vad_endpoint::Result<()> {
+            let mut endpoints = self.endpoints.lock().expect("lock");
+            for endpoint in endpoints.iter_mut() {
+                if endpoint.device_id == device_id {
+                    endpoint.active = visible;
+                    endpoint.disabled = !visible;
                     return Ok(());
                 }
             }

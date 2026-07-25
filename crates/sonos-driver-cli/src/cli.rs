@@ -130,6 +130,13 @@ pub(crate) struct VadBindArgs {
     /// sized before rebuilding the driver. Requires `--dry-run`.
     #[arg(long, value_name = "N", requires = "dry_run")]
     pub(crate) assume_endpoints: Option<u32>,
+    /// Leave the driver's unused endpoints visible in the Windows sound UI.
+    ///
+    /// By default every slot no room was bound to is disabled, so the sound
+    /// picker shows exactly your rooms instead of a run of "Sonos Output 7"
+    /// placeholders. Pass this to keep them, e.g. when diagnosing the driver.
+    #[arg(long)]
+    pub(crate) keep_spare_endpoints: bool,
 }
 
 /// Arguments for `vad serve`.

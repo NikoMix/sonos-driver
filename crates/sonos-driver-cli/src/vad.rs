@@ -15,8 +15,8 @@ use sonos_driver_core::capture::LoopbackCapture;
 use sonos_driver_core::core::{AudioSource, CaptureConfig, Config};
 use sonos_driver_core::vad::RoomKey;
 use sonos_driver_core::vad_endpoint::{
-    factory_name_for_slot, plan_bindings, SystemEndpoints, VadEndpoint, VadEndpoints,
-    DEFAULT_ADAPTER_NAME,
+    factory_name_for_slot, plan_bindings_with, plan_release_all, SystemEndpoints, VadEndpoint,
+    VadEndpoints, DEFAULT_ADAPTER_NAME,
 };
 use sonos_driver_core::{MultiRoomBridge, RoomSession};
 
@@ -108,7 +108,7 @@ fn run_bind(args: &VadBindArgs) -> anyhow::Result<()> {
             Some(count) => synthetic_endpoints(count),
             None => endpoints.list().context("listing sonosvad endpoints")?,
         };
-        let plan = plan_bindings(&current, &rooms);
+        let plan = plan_bindings_with(&current, &rooms, !args.keep_spare_endpoints);
         println!("# Bindings that would be applied:\n");
         for bind in &plan.binds {
             let mark = if bind.rename_needed { "*" } else { " " };
@@ -116,6 +116,12 @@ fn run_bind(args: &VadBindArgs) -> anyhow::Result<()> {
         }
         for release in &plan.releases {
             println!("  * {} (released)", release.name);
+        }
+        if !plan.hide.is_empty() {
+            println!("  * {} spare endpoint(s) hidden", plan.hide.len());
+        }
+        if !plan.show.is_empty() {
+            println!("  * {} hidden endpoint(s) restored", plan.show.len());
         }
         if plan.unplaced > 0 {
             println!(
@@ -130,8 +136,12 @@ fn run_bind(args: &VadBindArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let bindings = sonos_driver_core::vad_endpoint::bind_rooms(&endpoints, &rooms)
-        .context("binding Sonos rooms to sonosvad endpoints")?;
+    let bindings = sonos_driver_core::vad_endpoint::bind_rooms_with(
+        &endpoints,
+        &rooms,
+        !args.keep_spare_endpoints,
+    )
+    .context("binding Sonos rooms to sonosvad endpoints")?;
 
     println!("Bound {} room(s):", bindings.len());
     for binding in &bindings {
@@ -157,6 +167,7 @@ fn synthetic_endpoints(count: u32) -> Vec<VadEndpoint> {
                 adapter: DEFAULT_ADAPTER_NAME.to_owned(),
                 slot: Some(slot),
                 active: false,
+                disabled: false,
             }
         })
         .collect()
@@ -165,12 +176,17 @@ fn synthetic_endpoints(count: u32) -> Vec<VadEndpoint> {
 fn run_release() -> anyhow::Result<()> {
     let endpoints = SystemEndpoints::new();
     let current = endpoints.list().context("listing sonosvad endpoints")?;
-    // Binding against an empty room set releases every slot.
-    let plan = plan_bindings(&current, &[]);
-    let count = plan.releases.len();
+    // Restores factory names *and* un-hides every slot we disabled, so nothing
+    // outlives the binding.
+    let plan = plan_release_all(&current);
+    let renamed = plan.releases.len();
+    let revealed = plan.show.len();
     sonos_driver_core::vad_endpoint::apply_plan(&endpoints, &plan)
         .context("restoring factory endpoint names")?;
-    println!("Released {count} endpoint(s) back to their factory names.");
+    println!("Released {renamed} endpoint(s) back to their factory names.");
+    if revealed > 0 {
+        println!("Restored {revealed} hidden endpoint(s) to the Windows sound UI.");
+    }
     Ok(())
 }
 

@@ -32,6 +32,12 @@ pub(crate) struct WorkerSettings {
     pub seed_host: Option<String>,
     /// Discovery timeout.
     pub discovery_timeout: Duration,
+    /// Hide the driver's unused endpoints from the Windows sound UI.
+    ///
+    /// On by default in the service, because the service owns the machine's
+    /// sound picker: the driver ships a fixed pool of slots and the user should
+    /// see their rooms, not "Sonos Output 7".
+    pub hide_spare_endpoints: bool,
 }
 
 impl Default for WorkerSettings {
@@ -40,6 +46,7 @@ impl Default for WorkerSettings {
             config_path: Some(default_config_path()),
             seed_host: None,
             discovery_timeout: Duration::from_secs(5),
+            hide_spare_endpoints: true,
         }
     }
 }
@@ -123,7 +130,11 @@ fn run_once(settings: &WorkerSettings, stop: &StopHandle) -> anyhow::Result<()> 
     supervisor.adopt_stop_handle(stop);
 
     let sessions = supervisor
-        .plan(&SystemEndpoints::new(), &rooms)
+        .plan_with(
+            &SystemEndpoints::new(),
+            &rooms,
+            settings.hide_spare_endpoints,
+        )
         .context("planning per-room sessions")?;
 
     if sessions.is_empty() {

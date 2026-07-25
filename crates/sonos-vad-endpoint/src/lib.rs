@@ -38,8 +38,9 @@ mod naming;
 mod sys;
 
 pub use naming::{
-    factory_name_for_slot, plan_bindings, slot_from_factory_name, Binding, BindingPlan, Release,
-    DEFAULT_ADAPTER_NAME, FACTORY_NAME_PREFIX,
+    factory_name_for_slot, plan_bindings, plan_bindings_with, plan_release_all,
+    slot_from_factory_name, Binding, BindingPlan, Release, DEFAULT_ADAPTER_NAME,
+    FACTORY_NAME_PREFIX,
 };
 
 use sonos_vad_control::RoomKey;
@@ -113,6 +114,14 @@ pub struct VadEndpoint {
 
     /// Whether Windows currently reports the endpoint as active.
     pub active: bool,
+
+    /// Whether Windows reports the endpoint as *disabled* specifically.
+    ///
+    /// Distinct from `!active`, which also covers unplugged and not-present.
+    /// Only a disabled endpoint may be re-enabled by writing `DeviceState`;
+    /// forcing a not-present one to "active" would leave a phantom entry in the
+    /// sound picker pointing at hardware that is not there.
+    pub disabled: bool,
 }
 
 impl VadEndpoint {
@@ -145,19 +154,46 @@ pub trait VadEndpoints {
     /// [`Error::NotFound`] when the endpoint has disappeared, or
     /// [`Error::Windows`] for any other failure.
     fn rename(&self, device_id: &str, name: &str) -> Result<()>;
+
+    /// Show or hide `device_id` in the Windows sound UI.
+    ///
+    /// Hiding is how the fixed pool of driver slots is reconciled with a
+    /// household of a different size: spare endpoints are disabled rather than
+    /// left in the picker as "Sonos Output 7".
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::AccessDenied`] when the process is not elevated,
+    /// [`Error::NotFound`] when the endpoint has disappeared, or
+    /// [`Error::Windows`] for any other failure.
+    fn set_visible(&self, device_id: &str, visible: bool) -> Result<()>;
 }
 
-/// Applies a [`BindingPlan`] by renaming the affected endpoints.
+/// Applies a [`BindingPlan`] by renaming the affected endpoints and reconciling
+/// their visibility.
 ///
-/// Renames are attempted for every entry; the first error is returned after the
-/// rest have been tried, so one bad endpoint cannot strand the others in a
+/// Every step is attempted even after a failure, and the first error is
+/// returned at the end, so one bad endpoint cannot strand the others in a
 /// half-applied state.
+///
+/// Order matters: endpoints are revealed before they are named (so a room's
+/// output exists in the picker by the time it carries the room's name) and
+/// hidden last (so a slot being handed from one room to another is never
+/// momentarily invisible).
 ///
 /// # Errors
 ///
-/// Returns the first [`Error`] encountered, after attempting every rename.
+/// Returns the first [`Error`] encountered, after attempting every step.
 pub fn apply_plan<E: VadEndpoints + ?Sized>(endpoints: &E, plan: &BindingPlan) -> Result<()> {
     let mut first_error = None;
+
+    for device_id in &plan.show {
+        tracing::debug!(%device_id, "revealing endpoint");
+        if let Err(error) = endpoints.set_visible(device_id, true) {
+            tracing::warn!(%device_id, %error, "failed to reveal endpoint");
+            first_error.get_or_insert(error);
+        }
+    }
 
     for release in &plan.releases {
         tracing::debug!(device_id = %release.device_id, name = %release.name, "releasing endpoint");
@@ -174,6 +210,14 @@ pub fn apply_plan<E: VadEndpoints + ?Sized>(endpoints: &E, plan: &BindingPlan) -
         tracing::debug!(device_id = %bind.device_id, name = %bind.name, room = %bind.room.uuid, "binding endpoint");
         if let Err(error) = endpoints.rename(&bind.device_id, &bind.name) {
             tracing::warn!(device_id = %bind.device_id, %error, "failed to bind endpoint");
+            first_error.get_or_insert(error);
+        }
+    }
+
+    for device_id in &plan.hide {
+        tracing::debug!(%device_id, "hiding spare endpoint");
+        if let Err(error) = endpoints.set_visible(device_id, false) {
+            tracing::warn!(%device_id, %error, "failed to hide spare endpoint");
             first_error.get_or_insert(error);
         }
     }
@@ -196,14 +240,34 @@ pub fn bind_rooms<E: VadEndpoints + ?Sized>(
     endpoints: &E,
     rooms: &[RoomKey],
 ) -> Result<Vec<Binding>> {
+    bind_rooms_with(endpoints, rooms, false)
+}
+
+/// [`bind_rooms`], additionally hiding the endpoints no room was bound to when
+/// `hide_spares` is set.
+///
+/// # Errors
+///
+/// Propagates any error from [`VadEndpoints::list`] or [`apply_plan`].
+pub fn bind_rooms_with<E: VadEndpoints + ?Sized>(
+    endpoints: &E,
+    rooms: &[RoomKey],
+    hide_spares: bool,
+) -> Result<Vec<Binding>> {
     let current = endpoints.list()?;
-    let plan = plan_bindings(&current, rooms);
+    let plan = plan_bindings_with(&current, rooms, hide_spares);
 
     if plan.unplaced > 0 {
         tracing::warn!(
             unplaced = plan.unplaced,
             slots = current.len(),
             "more Sonos rooms than sonosvad endpoints; rebuild the driver with a larger SONOSVAD_ENDPOINT_COUNT"
+        );
+    }
+    if !plan.hide.is_empty() {
+        tracing::info!(
+            hidden = plan.hide.len(),
+            "hiding spare sonosvad endpoints so the sound picker shows only your rooms"
         );
     }
 
@@ -262,6 +326,10 @@ impl VadEndpoints for SystemEndpoints {
     fn rename(&self, device_id: &str, name: &str) -> Result<()> {
         sys::rename(device_id, name)
     }
+
+    fn set_visible(&self, device_id: &str, visible: bool) -> Result<()> {
+        sys::set_visible(device_id, visible)
+    }
 }
 
 #[cfg(not(windows))]
@@ -271,6 +339,10 @@ impl VadEndpoints for SystemEndpoints {
     }
 
     fn rename(&self, _device_id: &str, _name: &str) -> Result<()> {
+        Err(Error::UnsupportedPlatform)
+    }
+
+    fn set_visible(&self, _device_id: &str, _visible: bool) -> Result<()> {
         Err(Error::UnsupportedPlatform)
     }
 }
@@ -297,6 +369,7 @@ mod tests {
                         adapter: DEFAULT_ADAPTER_NAME.to_owned(),
                         slot: Some(slot),
                         active: true,
+                        disabled: false,
                     }
                 })
                 .collect();
@@ -311,6 +384,16 @@ mod tests {
                 .borrow()
                 .iter()
                 .map(|e| e.friendly_name.clone())
+                .collect()
+        }
+
+        /// The factory names of the endpoints Windows would still show.
+        fn visible_slots(&self) -> Vec<u32> {
+            self.endpoints
+                .borrow()
+                .iter()
+                .filter(|e| e.active)
+                .filter_map(|e| e.slot)
                 .collect()
         }
     }
@@ -330,6 +413,20 @@ mod tests {
                 .find(|e| e.device_id == device_id)
                 .ok_or_else(|| Error::NotFound(device_id.to_owned()))?;
             target.friendly_name = name.to_owned();
+            Ok(())
+        }
+
+        fn set_visible(&self, device_id: &str, visible: bool) -> Result<()> {
+            if self.fail_on.as_deref() == Some(device_id) {
+                return Err(Error::AccessDenied);
+            }
+            let mut endpoints = self.endpoints.borrow_mut();
+            let target = endpoints
+                .iter_mut()
+                .find(|e| e.device_id == device_id)
+                .ok_or_else(|| Error::NotFound(device_id.to_owned()))?;
+            target.active = visible;
+            target.disabled = !visible;
             Ok(())
         }
     }
@@ -410,5 +507,59 @@ mod tests {
 
         assert_eq!(bindings.len(), 1);
         assert_eq!(fake.names(), vec!["Sonos Living Room"]);
+    }
+
+    #[test]
+    fn spare_endpoints_are_hidden_so_the_picker_shows_only_rooms() {
+        let fake = FakeEndpoints::with_slots(8);
+        let rooms = vec![
+            RoomKey::new("RINCON_1", "Wohnzimmer"),
+            RoomKey::new("RINCON_2", "Küche"),
+        ];
+
+        let bindings = bind_rooms_with(&fake, &rooms, true).expect("bind succeeds");
+
+        assert_eq!(bindings.len(), 2);
+        assert_eq!(
+            fake.visible_slots(),
+            vec![1, 2],
+            "only the endpoints backing a real room may stay in the sound picker"
+        );
+    }
+
+    #[test]
+    fn a_hidden_endpoint_is_revealed_when_a_room_needs_it() {
+        let fake = FakeEndpoints::with_slots(3);
+
+        // One room: slots 2 and 3 get hidden.
+        let one = vec![RoomKey::new("RINCON_1", "Wohnzimmer")];
+        bind_rooms_with(&fake, &one, true).expect("first bind succeeds");
+        assert_eq!(fake.visible_slots(), vec![1]);
+
+        // A second room appears; its slot has to come back.
+        let two = vec![
+            RoomKey::new("RINCON_1", "Wohnzimmer"),
+            RoomKey::new("RINCON_2", "Küche"),
+        ];
+        bind_rooms_with(&fake, &two, true).expect("second bind succeeds");
+        assert_eq!(fake.visible_slots(), vec![1, 2]);
+        assert_eq!(
+            fake.names(),
+            vec![
+                "Sonos Wohnzimmer".to_owned(),
+                "Sonos Küche".to_owned(),
+                factory_name_for_slot(3),
+            ]
+        );
+    }
+
+    #[test]
+    fn hiding_is_opt_in_so_the_default_leaves_windows_alone() {
+        let fake = FakeEndpoints::with_slots(4);
+        let rooms = vec![RoomKey::new("RINCON_1", "Wohnzimmer")];
+
+        bind_rooms(&fake, &rooms).expect("bind succeeds");
+
+        assert_eq!(fake.visible_slots(), vec![1, 2, 3, 4]);
     }
 }
