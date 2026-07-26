@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Every Sonos room is now a native Windows audio output**, plus an **All
+  Sonos** output that plays to the whole household at once. Pick a room in the
+  Windows sound picker and system audio plays there; there is no GUI, by design.
+  See [ADR-0018](docs/adr/0018-loopback-rename-and-service-hosting.md).
+  - `sonosvad.sys` — a PortCls/WaveRT virtual audio driver (C++, derived from
+    Microsoft's MS-PL `simpleaudiosample`) exposing nine render endpoints: eight
+    rooms and one for the aggregate. It is a null sink that advances its stream
+    position at exactly real time; the audio never crosses the kernel boundary,
+    because WASAPI loopback capture already provides it in user mode.
+  - `sonosvad-svc` — a headless LocalSystem service that discovers the
+    household, renames each endpoint to its room, loopback-captures it, and
+    streams it to that room through the existing FLAC/HTTP/UPnP pipeline.
+  - **All Sonos** forms a real Sonos group rather than streaming to each room in
+    parallel, which drifts audibly. Absorbing whole zone groups keeps bonded
+    satellites and existing user groups intact and makes the party trivially
+    reversible.
+  - **Last-audio-wins arbitration.** When All Sonos and a room's own output both
+    have audio, whichever started most recently gets the speaker; when it falls
+    silent, the other picks the room back up.
+  - **`vad ungroup`** splits any rooms left grouped by a run that was killed
+    mid-party. Grouping lives in the speakers, so the absorbed rooms are
+    journalled to `%ProgramData%`; the service replays it on startup and
+    `Uninstall-Driver.ps1` runs it before removing the driver.
+  - **Idle release.** A silent output stops its player and hands the room back,
+    so the driver never holds speakers hostage from the Sonos app, and reclaims
+    them the moment audio returns.
+  - **Spare endpoints are hidden** from the sound picker, so it shows your rooms
+    rather than a run of "Sonos Output 7" placeholders. `vad release` restores
+    both the names and the visibility.
+  - **Seed-host discovery** (`--seed-host`): any one player reports the whole
+    household over unicast HTTP, which works on networks where SSDP multicast
+    does not (NAT'd VMs, guest wifi, APs without IGMP).
+  - `vad status | bind | release | ungroup | probe | serve` CLI, and
+    `driver/scripts/Test-Driver.ps1` (static validation: InfVerif, ApiValidator,
+    PE/import checks, catalog/signature) plus `Test-DriverOnHost.ps1` for the
+    load-dependent checks a sandbox cannot run.
+
 - **Foundation for an optional kernel virtual-audio driver** that would enumerate
   **each Sonos room as its own Windows output device** (personal-use, free
   test-signed; the user-mode bridge remains the default product). This phase lands

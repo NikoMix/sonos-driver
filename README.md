@@ -1,8 +1,13 @@
 # sonos-driver
 
-A **pure-Rust, user-mode Windows → Sonos audio bridge**. It captures your PC's
-system audio output (WASAPI loopback) and streams it to Sonos players on your LAN,
-with selectable latency/quality profiles.
+**Every Sonos room as a native Windows audio output.** Pick "Küche" in the
+Windows sound picker and your PC's audio plays in the kitchen. Pick "All Sonos"
+and it plays everywhere, in sync. There is no app to open and no GUI to
+configure — the Windows sound UI *is* the interface.
+
+Underneath sits a **pure-Rust user-mode bridge** that captures each output
+(WASAPI loopback) and streams it to the matching Sonos room, with selectable
+latency/quality profiles.
 
 > [!IMPORTANT]
 > **Latency reality.** Sonos players enforce a non-configurable internal buffer
@@ -12,30 +17,53 @@ with selectable latency/quality profiles.
 > good LAN) and is honest about the floor. See
 > [docs/LATENCY-BUDGET.md](docs/LATENCY-BUDGET.md).
 
+> [!NOTE]
+> **The virtual audio driver is personal-use and test-signed**, not
+> WHQL-certified, so loading it needs test signing enabled on your machine — see
+> [docs/DRIVER-SETUP.md](docs/DRIVER-SETUP.md). The user-mode bridge on its own
+> needs no driver at all and runs on any Windows machine.
+
 ## Status
 
-**v0.2.0 — feature-complete pipeline, now with a desktop GUI.** The full capture →
-pipeline → encode → serve → control path is implemented across all nine crates and
-wired together by [`Bridge::run()`](crates/sonos-driver-core/src/lib.rs): user-mode
-WASAPI loopback capture, resample/convert/jitter pipeline, L16/WAV/FLAC encoders, a
-chunked HTTP stream server, and SSDP + UPnP Sonos discovery/control. Drive it from a
-complete `clap` CLI (`list` / `stream` / `stop` / `config`) **or** the new
-system-tray desktop app (`sonos-driver-gui`).
+**Rooms-as-outputs feature complete; the driver awaits host validation.**
+`sonosvad` builds, signs and passes every static check (InfVerif, ApiValidator,
+PE/import and catalog/signature), and the Rust workspace is green across 325
+tests. Load-dependent verification — installing the driver, Driver Verifier, the
+audio round-trip, and the grouping calls against real speakers — has to run on a
+machine where test signing can be enabled, via
+[`driver/scripts/Test-DriverOnHost.ps1`](driver/scripts/Test-DriverOnHost.ps1).
+
+The user-mode bridge is unchanged and complete: capture → pipeline → encode →
+serve → control, wired by
+[`Bridge::run()`](crates/sonos-driver-core/src/lib.rs). Drive it from the `clap`
+CLI (`list` / `stream` / `stop` / `config` / `vad`), or let the headless
+`sonosvad-svc` service run one bridge per room.
 
 Everything except the Windows audio hardware path is exercised by automated tests
 (including a hardware-free end-to-end latency harness). WASAPI loopback cannot run in
 CI, so the capture path is verified with a
 [manual checklist](docs/AUDIO-CAPTURE-MANUAL-CHECKLIST.md). See the
-[changelog](CHANGELOG.md) for the full v1 capability set and
+[changelog](CHANGELOG.md) for the full capability set and
 [docs/QUALITY.md](docs/QUALITY.md) for the code-quality/telemetry snapshot.
 
 ## Features
 
-- 🎧 **System audio capture** via event-driven, user-mode WASAPI loopback — no driver
-  install, with a silence keep-alive so frames keep flowing even when nothing is playing.
+- 🔊 **One Windows output per Sonos room**, named after the room, via the
+  `sonosvad` virtual audio driver plus a headless service that binds them.
+  Unused outputs are hidden, so the picker shows your rooms and nothing else.
+- 🏠 **"All Sonos"** — one more output that plays to the whole household as a
+  real, synchronised Sonos group (not parallel streams, which drift audibly).
+- 🎚️ **Last-audio-wins.** Start audio on a room while "All Sonos" is playing and
+  that room leaves the party; when it falls silent, the party takes it back.
+- 💤 **Idle release.** A silent output hands its room back to the Sonos app
+  rather than holding it hostage, and reclaims it the moment audio returns.
+- 🎧 **System audio capture** via event-driven, user-mode WASAPI loopback — the
+  bridge alone needs no driver install, with a silence keep-alive so frames keep
+  flowing even when nothing is playing.
 - 📡 **Sonos discovery & control** over SSDP + UPnP SOAP (`SetAVTransportURI` / `Play` /
   `Stop`, volume, and zone-group topology so a stereo pair or group is driven by its
-  coordinator).
+  coordinator), plus **seed-host discovery** for networks where multicast is
+  blocked (NAT'd VMs, guest wifi, APs without IGMP).
 - 🔀 **Selectable lossless profiles:** `flac` (default — the format real Sonos players
   reliably accept over the live stream), `wav`, and `low-latency` (L16 PCM) — all
   pure-Rust. (`aac`/`mp3` are reserved but **not** implemented; see
@@ -45,9 +73,6 @@ CI, so the capture path is verified with a
 - 📊 **Telemetry:** structured `tracing` logs plus live `frames-captured` /
   `frames-streamed` / `underruns` / `reconnects` metrics and a controllable-latency
   snapshot.
-- 🖥️ **System-tray desktop app** (`sonos-driver-gui`): pick a room, choose a profile, and
-  start/stop the bridge from a tray icon plus a settings/status window — the audio path
-  runs on a worker thread so the UI never blocks. The CLI remains fully supported.
 - 🛡️ **Permissive licensing only**, enforced by `cargo-deny`; zero known
   vulnerabilities, enforced by `cargo-audit`; `unsafe` confined to one audited WASAPI
   FFI island.
@@ -90,6 +115,42 @@ Available streaming profiles (latency includes the fixed Sonos buffer):
 
 ## Quickstart
 
+### Rooms as Windows outputs (the product)
+
+This installs the `sonosvad` driver and the headless service, after which every
+room shows up in the Windows sound picker. It needs an **elevated** shell and a
+one-time reboot to enable test signing.
+
+```powershell
+# 1. Enable test signing (reboots), then create a test certificate.
+.\driver\scripts\Enable-TestSigning.ps1
+.\driver\scripts\New-TestCert.ps1
+
+# 2. Build, sign and install the driver.
+.\driver\scripts\Build-Driver.ps1
+.\driver\scripts\Sign-Driver.ps1
+.\driver\scripts\Install-Driver.ps1
+
+# 3. Install the service that binds endpoints to rooms and streams to them.
+cargo build --release -p sonos-vad-service
+.\target\release\sonosvad-svc.exe install
+Start-Service sonosvad-svc
+```
+
+Open **Settings → System → Sound** and your rooms are there, plus **All Sonos**.
+Pick one and play something. To undo it all, run
+`.\driver\scripts\Uninstall-Driver.ps1` followed by
+`.\driver\scripts\Disable-TestSigning.ps1`.
+
+If discovery finds nothing — common on networks that block multicast — point the
+service at any one player and it will find the rest:
+`sonosvad-svc install --seed-host 192.168.1.50`. Full runbook, including
+verification and rollback, in [docs/DRIVER-SETUP.md](docs/DRIVER-SETUP.md).
+
+### Without the driver (no install, no reboot)
+
+The CLI streams this PC's audio to one room and needs nothing installed:
+
 ```powershell
 # 1. Build the release binary (see Building for the MSVC prerequisite).
 cargo build --release -p sonos-driver-cli
@@ -103,12 +164,6 @@ cargo build --release -p sonos-driver-cli
 
 That's it — start playing audio on your PC and it comes out of the Sonos. If discovery
 finds nothing, jump to [Troubleshooting](#troubleshooting).
-
-Prefer a windowed experience? Launch the system-tray app instead of the CLI:
-
-```powershell
-cargo run --release -p sonos-driver-gui
-```
 
 > **Just want to run it?** Grab a prebuilt **portable zip** or **installer** from the
 > [Releases](https://github.com/NikoMix/sonos-driver/releases) page — no Rust toolchain
@@ -215,6 +270,32 @@ sonos-driver profiles
 ```
 
 See [Profiles](#profiles) for the output and the codec status table.
+
+### `vad` — drive the virtual audio driver
+
+These operate on the `sonosvad` endpoints. `bind`, `release` and `ungroup` write
+to endpoint property stores or the speakers, so they need an **elevated** shell.
+In normal use the service does all of this for you; reach for these when
+something looks wrong.
+
+```powershell
+sonos-driver vad status                   # list endpoints and what they're bound to
+sonos-driver vad bind --seed-host 1.2.3.4 # discover rooms, rename endpoints to match
+sonos-driver vad probe --device "Küche"    # does the endpoint clock run at real time?
+sonos-driver vad serve                    # bind, then stream every output to its room
+sonos-driver vad ungroup                  # split rooms left grouped by "All Sonos"
+sonos-driver vad release                  # restore factory names and visibility
+```
+
+`bind` takes `--keep-spare-endpoints` to leave unused outputs visible in the
+sound picker, and `--no-all-sonos` to skip the aggregate output; `serve` accepts
+both as well.
+
+`ungroup` matters after a crash: grouping lives in the speakers, not in Windows,
+so a service killed mid-party would otherwise leave the household grouped with
+no UI to undo it. The driver journals exactly which rooms it absorbed, replays
+that on service start, and `Uninstall-Driver.ps1` runs it before removing the
+driver — so you should rarely need it by hand.
 
 ## Configuration files
 
@@ -327,11 +408,20 @@ audio-capture ─ WASAPI loopback capture          (the sole unsafe/FFI island)
 audio-pipeline ─ resample / channel-convert / jitter buffer
 audio-codec ─── L16 PCM / WAV / FLAC encoders    (AAC/MP3 not implemented)
 stream-server ─ chunked HTTP server (axum + broadcast ring buffer)
-sonos-control ─ SSDP discovery + UPnP AVTransport/RenderingControl SOAP
-sonos-driver-core ─ Bridge orchestration, session lifecycle, metrics, latency
-sonos-driver-cli ── clap command-line UX (list / stream / stop / config)
-sonos-driver-gui ── egui/eframe system-tray desktop app (settings / status / start-stop)
+sonos-control ─ SSDP discovery + UPnP AVTransport/RenderingControl SOAP + grouping
+sonos-driver-core ─ Bridge orchestration, session lifecycle, arbitration, metrics
+sonos-vad-endpoint ─ enumerate / rename / hide the sonosvad render endpoints
+sonos-vad-service ─ headless LocalSystem service: one bridge per room  (sonosvad-svc)
+sonos-driver-cli ── clap command-line UX (list / stream / stop / config / vad)
+sonos-driver-gui ── legacy single-room tray app; kept for debugging, not the product
+driver/sonosvad ─── C++ PortCls/WaveRT virtual audio driver (MS-PL derivation)
 ```
+
+The driver is a **null sink**: it accepts a render stream and advances its
+position at exactly real time. Audio never crosses the kernel boundary, because
+WASAPI loopback capture — implemented by the user-mode audio engine — already
+provides it. That is what keeps the kernel component small enough to trust. See
+[ADR-0018](docs/adr/0018-loopback-rename-and-service-hosting.md).
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the data flow and threading
 model, and [docs/adr/](docs/adr/) for the key decisions.
