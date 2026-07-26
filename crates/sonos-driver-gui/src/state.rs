@@ -1,5 +1,5 @@
-//! The pure application state: room list, discovery + bridge status, the
-//! settings form and the latest telemetry.
+//! The pure application state: the outputs, the rooms, the routing table
+//! between them, and what the streaming worker is currently doing.
 //!
 //! Nothing here performs I/O or draws pixels. The rendering shell holds one
 //! [`AppState`], mutates it only through [`reduce`](crate::action::reduce), and
@@ -8,211 +8,173 @@
 use std::path::PathBuf;
 
 use audio_core::Config;
-use sonos_driver_core::control::SonosDevice;
-use sonos_driver_core::ControllableLatency;
+use sonos_cast_service::RouteReport;
+use sonos_routing::{RoomKey, RouteConfig, Source};
 
 use crate::config_form::SettingsForm;
 use crate::config_io::default_config_path;
-use crate::metrics::MetricsSnapshot;
+use crate::routes::{RoutingTable, DEFAULT_OUTPUT_ID};
 
-/// A discovered Sonos room, in a form decoupled from the control crate.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Room {
-    /// Stable device `UUID`.
-    pub uuid: String,
-    /// User-facing room/zone name.
-    pub name: String,
-    /// Marketing model name.
-    pub model: String,
-    /// `IPv4` address, formatted for display.
-    pub ip: String,
-}
-
-impl Room {
-    /// Project a discovered [`SonosDevice`] into a UI [`Room`].
-    #[must_use]
-    pub fn from_device(device: &SonosDevice) -> Self {
-        Self {
-            uuid: device.uuid.clone(),
-            name: device.room_name.clone(),
-            model: device.model_name.clone(),
-            ip: device.ip.to_string(),
-        }
-    }
-
-    /// A combined, human-readable label, e.g. `Living Room (Sonos One)`.
-    #[must_use]
-    pub fn label(&self) -> String {
-        if self.model.is_empty() {
-            self.name.clone()
-        } else {
-            format!("{} ({})", self.name, self.model)
-        }
-    }
-}
-
-/// An ordered list of discovered rooms with a sticky selection.
-#[derive(Debug, Clone, Default)]
-pub struct RoomList {
-    rooms: Vec<Room>,
-    selected: Option<usize>,
-}
-
-impl RoomList {
-    /// An empty list with no selection.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Replace the rooms, preserving the selection by `UUID` when possible and
-    /// otherwise selecting the first room (or nothing, when empty).
-    pub fn replace(&mut self, rooms: Vec<Room>) {
-        let previous = self.selected_room().map(|room| room.uuid.clone());
-        self.rooms = rooms;
-        self.selected = previous
-            .and_then(|uuid| self.rooms.iter().position(|room| room.uuid == uuid))
-            .or(if self.rooms.is_empty() { None } else { Some(0) });
-    }
-
-    /// Select by index. Returns `false` when the index is out of bounds.
-    pub fn select(&mut self, index: usize) -> bool {
-        if index < self.rooms.len() {
-            self.selected = Some(index);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// The selected index, if any.
-    #[must_use]
-    pub fn selected_index(&self) -> Option<usize> {
-        self.selected
-    }
-
-    /// The selected room, if any.
-    #[must_use]
-    pub fn selected_room(&self) -> Option<&Room> {
-        self.selected.and_then(|index| self.rooms.get(index))
-    }
-
-    /// The rooms, in presentation order.
-    #[must_use]
-    pub fn rooms(&self) -> &[Room] {
-        &self.rooms
-    }
-
-    /// The number of rooms.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.rooms.len()
-    }
-
-    /// Whether the list is empty.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.rooms.is_empty()
-    }
-}
-
-/// The state of background Sonos discovery.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum Discovery {
-    /// No discovery in flight.
-    #[default]
-    Idle,
-    /// A discovery search is running.
-    Running,
-    /// The last discovery failed, with a human-readable reason.
-    Failed(String),
-}
-
-impl Discovery {
-    /// Whether a discovery search is currently running.
-    #[must_use]
-    pub fn is_running(&self) -> bool {
-        matches!(self, Self::Running)
-    }
-}
-
-/// A Windows audio **render** endpoint offered in the capture-device picker.
+/// A Windows audio **render** endpoint: one row of the routing table.
 ///
-/// This is a render-agnostic mirror of `audio_capture::EndpointInfo`, kept in the
-/// headless library so the picker state stays unit-testable without WASAPI.
+/// A render-agnostic mirror of `audio_capture::EndpointInfo`, kept in the
+/// headless library so the table stays unit-testable without WASAPI.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CaptureDevice {
-    /// Stable WASAPI endpoint id (the exact, unambiguous selector).
+pub struct Output {
+    /// Stable WASAPI endpoint id, or empty for the default-follower row.
     pub id: String,
     /// Human-friendly endpoint name, e.g. `Speakers (Realtek(R) Audio)`.
     pub name: String,
-    /// Whether this is the current default render endpoint.
-    pub is_default: bool,
+    /// Whether Windows currently plays new audio here by default.
+    pub is_default_endpoint: bool,
 }
 
-impl CaptureDevice {
-    /// Construct a capture-device descriptor.
+impl Output {
+    /// Describe a real render endpoint.
     #[must_use]
     pub fn new(id: impl Into<String>, name: impl Into<String>, is_default: bool) -> Self {
         Self {
             id: id.into(),
             name: name.into(),
-            is_default,
+            is_default_endpoint: is_default,
         }
     }
 
-    /// A display label that flags the default endpoint.
+    /// The synthetic row that always tracks whatever Windows calls the default.
     #[must_use]
-    pub fn label(&self) -> String {
-        if self.is_default {
-            format!("{} (default)", self.name)
+    pub fn default_follower() -> Self {
+        Self {
+            id: DEFAULT_OUTPUT_ID.to_owned(),
+            name: "Default output".to_owned(),
+            is_default_endpoint: false,
+        }
+    }
+
+    /// Whether this is the synthetic default-follower row.
+    #[must_use]
+    pub fn is_follower(&self) -> bool {
+        self.id == DEFAULT_OUTPUT_ID
+    }
+
+    /// What the streaming worker should capture for this row.
+    ///
+    /// The follower resolves late, so it stays correct when the user changes
+    /// the default output in the Windows sound settings while streaming.
+    #[must_use]
+    pub fn source(&self) -> Source {
+        if self.is_follower() {
+            Source::Default
         } else {
-            self.name.clone()
+            Source::Device(self.id.clone())
+        }
+    }
+
+    /// How this row is written to the portable config file.
+    ///
+    /// The friendly name rather than the endpoint id: a saved file should be
+    /// readable and should survive being copied to another machine, and
+    /// `audio-capture` matches names as well as ids.
+    #[must_use]
+    pub fn config_selector(&self) -> Option<String> {
+        (!self.is_follower()).then(|| self.name.clone())
+    }
+
+    /// A short explanation shown under the row's name.
+    #[must_use]
+    pub fn description(&self) -> &'static str {
+        if self.is_follower() {
+            "Whatever Windows is set to"
+        } else if self.is_default_endpoint {
+            "Windows default"
+        } else {
+            ""
         }
     }
 }
 
-/// The state of background capture-device enumeration.
+/// A discovered Sonos room.
+///
+/// One entry per *room*, not per player: a stereo pair or a bonded surround set
+/// is a single destination, which is what the sound picker shows and what the
+/// user thinks in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Room {
+    /// Stable device `UUID` of the room's coordinator.
+    pub uuid: String,
+    /// User-facing room/zone name.
+    pub name: String,
+}
+
+impl Room {
+    /// Describe a room.
+    #[must_use]
+    pub fn new(uuid: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            uuid: uuid.into(),
+            name: name.into(),
+        }
+    }
+
+    /// Project a discovered [`RoomKey`] into a UI [`Room`].
+    #[must_use]
+    pub fn from_key(key: &RoomKey) -> Self {
+        Self::new(key.uuid.clone(), key.name.clone())
+    }
+}
+
+/// The state of a background scan (discovery or endpoint enumeration).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum DeviceScan {
-    /// No enumeration in flight.
+pub enum Scan {
+    /// Never run.
     #[default]
     Idle,
-    /// An enumeration is running.
+    /// A scan is in flight.
     Running,
-    /// The last enumeration failed, with a human-readable reason.
+    /// The last scan finished successfully.
+    Done,
+    /// The last scan failed, with a human-readable reason.
     Failed(String),
 }
 
-impl DeviceScan {
-    /// Whether an enumeration is currently running.
+impl Scan {
+    /// Whether a scan is currently running.
     #[must_use]
     pub fn is_running(&self) -> bool {
         matches!(self, Self::Running)
     }
+
+    /// The failure reason, if the last scan failed.
+    #[must_use]
+    pub fn error(&self) -> Option<&str> {
+        match self {
+            Self::Failed(reason) => Some(reason.as_str()),
+            _ => None,
+        }
+    }
 }
 
-/// The lifecycle state of the audio bridge.
+/// What the streaming worker is doing.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum BridgeStatus {
-    /// Not streaming.
+pub enum StreamStatus {
+    /// Nothing is streaming.
     #[default]
     Stopped,
-    /// Target resolution and capture start-up are in progress.
+    /// The worker has been asked to start and is discovering/planning.
     Starting,
-    /// The bridge is streaming audio to the player.
-    Running,
+    /// Routes are live.
+    Streaming,
+    /// The last attempt failed. The worker retries on its own; the reason is
+    /// kept so the UI can say *why* rather than just spinning.
+    Retrying(String),
     /// A stop has been requested and teardown is in progress.
     Stopping,
-    /// The session ended with an error, carrying the reason.
-    Failed(String),
 }
 
-impl BridgeStatus {
-    /// Whether a session is currently starting, running or stopping.
+impl StreamStatus {
+    /// Whether the worker is alive in any form.
     #[must_use]
     pub fn is_active(&self) -> bool {
-        matches!(self, Self::Starting | Self::Running | Self::Stopping)
+        !matches!(self, Self::Stopped)
     }
 
     /// A short, fixed status label for display.
@@ -221,9 +183,9 @@ impl BridgeStatus {
         match self {
             Self::Stopped => "Stopped",
             Self::Starting => "Starting",
-            Self::Running => "Running",
+            Self::Streaming => "Streaming",
+            Self::Retrying(_) => "Retrying",
             Self::Stopping => "Stopping",
-            Self::Failed(_) => "Failed",
         }
     }
 }
@@ -231,161 +193,146 @@ impl BridgeStatus {
 /// The complete, render-agnostic application state.
 #[derive(Debug, Clone)]
 pub struct AppState {
-    /// Discovered rooms and the current selection.
-    pub rooms: RoomList,
+    /// Discovered rooms, in discovery (alphabetical) order.
+    pub rooms: Vec<Room>,
     /// Background discovery status.
-    pub discovery: Discovery,
-    /// Available capture (render) endpoints for the device picker.
-    pub devices: Vec<CaptureDevice>,
-    /// Background capture-device enumeration status.
-    pub device_scan: DeviceScan,
-    /// Audio bridge lifecycle status.
-    pub bridge: BridgeStatus,
-    /// The editable settings form.
-    pub form: SettingsForm,
-    /// The configuration backing the most recent start request.
-    pub active_config: Config,
-    /// Live count of captured audio blocks for the running session.
-    pub live_captured: u64,
-    /// Authoritative metrics from the most recently ended session.
-    pub last_metrics: Option<MetricsSnapshot>,
-    /// Controllable-latency snapshot from the most recently ended session.
-    pub last_latency: Option<ControllableLatency>,
+    pub discovery: Scan,
+    /// Background render-endpoint enumeration status.
+    pub outputs: Scan,
+    /// The output-to-room assignments.
+    pub table: RoutingTable,
+    /// What the streaming worker is doing.
+    pub stream: StreamStatus,
+    /// The routes the worker reports as live.
+    pub live: Vec<RouteReport>,
+    /// Whether the table has been edited since the worker was last started.
+    pub unapplied: bool,
+    /// The editable audio settings.
+    pub settings: SettingsForm,
+    /// The routes read from disk, held until the outputs are known.
+    ///
+    /// A saved route names an output, so it cannot be placed until the OS has
+    /// said which outputs exist. Keeping it here rather than applying it early
+    /// means a slow enumeration cannot silently discard the user's routing.
+    pub saved_routes: Vec<RouteConfig>,
     /// A one-line status message for the UI footer.
     pub status_line: String,
-    /// Where the configuration is loaded from and saved to.
+    /// Where the routing table and settings are loaded from and saved to.
     pub config_path: PathBuf,
 }
 
 impl Default for AppState {
     fn default() -> Self {
-        Self::new(default_config_path(), Config::default())
+        Self::new(default_config_path(), &Config::default())
     }
 }
 
 impl AppState {
     /// Build state for `config`, persisted at `config_path`.
     #[must_use]
-    pub fn new(config_path: PathBuf, config: Config) -> Self {
+    pub fn new(config_path: PathBuf, config: &Config) -> Self {
         Self {
-            rooms: RoomList::new(),
-            discovery: Discovery::Idle,
-            devices: Vec::new(),
-            device_scan: DeviceScan::Idle,
-            bridge: BridgeStatus::Stopped,
-            form: SettingsForm::from_config(&config),
-            active_config: config,
-            live_captured: 0,
-            last_metrics: None,
-            last_latency: None,
-            status_line: "Idle".to_owned(),
+            rooms: Vec::new(),
+            discovery: Scan::Idle,
+            outputs: Scan::Idle,
+            table: RoutingTable::new(),
+            stream: StreamStatus::Stopped,
+            live: Vec::new(),
+            unapplied: false,
+            settings: SettingsForm::from_config(config),
+            saved_routes: Vec::new(),
+            status_line: "Looking for outputs and rooms…".to_owned(),
             config_path,
         }
+    }
+
+    /// Whether the table can be started: something is routed, and nothing in it
+    /// contradicts itself.
+    #[must_use]
+    pub fn can_start(&self) -> bool {
+        !self.table.is_idle() && self.table.conflicts().is_empty()
+    }
+
+    /// Room names, for the destination picker.
+    #[must_use]
+    pub fn room_names(&self) -> Vec<&str> {
+        self.rooms.iter().map(|room| room.name.as_str()).collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BridgeStatus, CaptureDevice, DeviceScan, Discovery, Room, RoomList};
-    use sonos_driver_core::control::SonosDevice;
-    use std::net::Ipv4Addr;
+    use super::{AppState, Output, Room, Scan, StreamStatus};
+    use crate::routes::Destination;
+    use sonos_routing::{RoomKey, Source};
 
-    fn device(uuid: &str, room: &str) -> SonosDevice {
-        SonosDevice {
-            uuid: uuid.to_owned(),
-            room_name: room.to_owned(),
-            model_name: "Sonos One".to_owned(),
-            ip: Ipv4Addr::new(192, 168, 1, 20),
+    #[test]
+    fn a_real_endpoint_captures_itself_by_id() {
+        let output = Output::new("{0.0.0}.abc", "Speakers", true);
+        assert!(!output.is_follower());
+        assert_eq!(output.source(), Source::Device("{0.0.0}.abc".to_owned()));
+        assert_eq!(output.config_selector().as_deref(), Some("Speakers"));
+        assert_eq!(output.description(), "Windows default");
+    }
+
+    #[test]
+    fn the_follower_row_resolves_late() {
+        let output = Output::default_follower();
+        assert!(output.is_follower());
+        assert_eq!(output.source(), Source::Default);
+        // No `device` key, so the config file says "the default", not a name
+        // that would freeze today's default in place.
+        assert_eq!(output.config_selector(), None);
+    }
+
+    #[test]
+    fn a_room_projects_from_a_discovery_key() {
+        let room = Room::from_key(&RoomKey::new("RINCON_1", "Küche"));
+        assert_eq!(room, Room::new("RINCON_1", "Küche"));
+    }
+
+    #[test]
+    fn a_scan_reports_only_its_own_failure() {
+        assert_eq!(Scan::Failed("boom".to_owned()).error(), Some("boom"));
+        assert_eq!(Scan::Done.error(), None);
+        assert!(Scan::Running.is_running());
+        assert!(!Scan::Done.is_running());
+    }
+
+    #[test]
+    fn only_stopped_counts_as_inactive() {
+        assert!(!StreamStatus::Stopped.is_active());
+        for status in [
+            StreamStatus::Starting,
+            StreamStatus::Streaming,
+            StreamStatus::Retrying("x".to_owned()),
+            StreamStatus::Stopping,
+        ] {
+            assert!(status.is_active(), "{status:?}");
+            assert!(!status.label().is_empty());
         }
     }
 
     #[test]
-    fn from_device_projects_all_fields() {
-        let room = Room::from_device(&device("RINCON_1", "Living Room"));
-        assert_eq!(room.uuid, "RINCON_1");
-        assert_eq!(room.name, "Living Room");
-        assert_eq!(room.label(), "Living Room (Sonos One)");
-        assert_eq!(room.ip, "192.168.1.20");
+    fn an_empty_table_cannot_be_started() {
+        let state = AppState::default();
+        assert!(!state.can_start());
     }
 
     #[test]
-    fn replace_selects_first_room_by_default() {
-        let mut list = RoomList::new();
-        assert!(list.is_empty());
-        list.replace(vec![
-            Room::from_device(&device("a", "A")),
-            Room::from_device(&device("b", "B")),
+    fn a_conflicting_table_cannot_be_started() {
+        let mut state = AppState::default();
+        state.table.sync_outputs(vec![
+            Output::new("a", "A", true),
+            Output::new("b", "B", false),
         ]);
-        assert_eq!(list.len(), 2);
-        assert_eq!(list.selected_index(), Some(0));
-        assert_eq!(
-            list.selected_room().map(|room| room.uuid.as_str()),
-            Some("a")
-        );
-    }
-
-    #[test]
-    fn replace_preserves_selection_by_uuid() {
-        let mut list = RoomList::new();
-        list.replace(vec![
-            Room::from_device(&device("a", "A")),
-            Room::from_device(&device("b", "B")),
-        ]);
-        assert!(list.select(1));
-        // Re-discovery returns the rooms in a different order; the "b" selection
-        // must follow the device, not the index.
-        list.replace(vec![
-            Room::from_device(&device("c", "C")),
-            Room::from_device(&device("b", "B")),
-        ]);
-        assert_eq!(
-            list.selected_room().map(|room| room.uuid.as_str()),
-            Some("b")
-        );
-    }
-
-    #[test]
-    fn select_rejects_out_of_bounds() {
-        let mut list = RoomList::new();
-        list.replace(vec![Room::from_device(&device("a", "A"))]);
-        assert!(!list.select(5));
-        assert_eq!(list.selected_index(), Some(0));
-    }
-
-    #[test]
-    fn empty_replace_clears_selection() {
-        let mut list = RoomList::new();
-        list.replace(vec![Room::from_device(&device("a", "A"))]);
-        list.replace(Vec::new());
-        assert!(list.is_empty());
-        assert_eq!(list.selected_index(), None);
-        assert!(list.selected_room().is_none());
-    }
-
-    #[test]
-    fn status_predicates_are_correct() {
-        assert!(!BridgeStatus::Stopped.is_active());
-        assert!(BridgeStatus::Starting.is_active());
-        assert!(BridgeStatus::Running.is_active());
-        assert!(BridgeStatus::Stopping.is_active());
-        assert!(!BridgeStatus::Failed("boom".to_owned()).is_active());
-        assert_eq!(BridgeStatus::Running.label(), "Running");
-        assert!(Discovery::Running.is_running());
-        assert!(!Discovery::Idle.is_running());
-    }
-
-    #[test]
-    fn capture_device_label_flags_the_default() {
-        let normal = CaptureDevice::new("id-a", "Speakers (Realtek)", false);
-        assert_eq!(normal.label(), "Speakers (Realtek)");
-        let default = CaptureDevice::new("id-b", "Headphones (USB)", true);
-        assert_eq!(default.label(), "Headphones (USB) (default)");
-    }
-
-    #[test]
-    fn device_scan_running_predicate() {
-        assert!(DeviceScan::Running.is_running());
-        assert!(!DeviceScan::Idle.is_running());
-        assert!(!DeviceScan::Failed("nope".to_owned()).is_running());
+        let kitchen = Destination::Room {
+            uuid: "RINCON_1".to_owned(),
+            name: "Küche".to_owned(),
+        };
+        state.table.assign(1, kitchen.clone());
+        assert!(state.can_start());
+        state.table.assign(2, kitchen);
+        assert!(!state.can_start(), "two outputs claiming one room");
     }
 }

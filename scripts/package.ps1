@@ -6,8 +6,9 @@
     Produces a self-contained, portable release archive that needs no Rust toolchain on
     the target machine. The zip bundles:
 
-      * sonos-driver.exe       - the release CLI binary
-      * sonos-driver-gui.exe   - the system-tray desktop GUI binary
+      * sonos-driver.exe    - the release CLI binary
+      * sonos-router.exe   - the Sonos Router desktop app
+      * sonos-cast-svc.exe - the driverless background service (service name: sonoscast)
       * README.md          - the project front door
       * CHANGELOG.md       - release notes
       * LICENSE-MIT        - MIT licence text
@@ -16,16 +17,25 @@
                              freshly built binary's own `config example`, so it can
                              never drift from the code)
 
+    With -IncludeDriver it additionally bundles the kernel-driver mode:
+
+      * sonosvad-svc.exe        - the driver-mode service (service name: sonosvad)
+      * driver\sonosvad.sys     - the test-signed virtual audio driver
+      * driver\sonosvad.inf     - its INF
+      * driver\sonosvad.cat     - its catalogue
+      * driver\scripts\*.ps1    - install / uninstall / signing / validation scripts
+      * driver\README.md        - the driver's own documentation
+
     The archive is named:
 
       sonos-driver-<version>-x86_64-pc-windows-msvc.zip
 
     where <version> is read from [workspace.package] in the workspace Cargo.toml.
 
-    By default the script runs `cargo build --release -p sonos-driver-cli` first, so it
-    must be invoked from a shell where the MSVC build environment is initialised
+    By default the script runs `cargo build --release` for every bundled crate first, so
+    it must be invoked from a shell where the MSVC build environment is initialised
     (a "Developer PowerShell for VS", or after running vcvars64.bat). Use -SkipBuild to
-    package an already-built binary without invoking cargo.
+    package already-built binaries without invoking cargo.
 
     No extra crate or xtask is required (see docs/adr/0010-portable-release-packaging.md).
 
@@ -34,8 +44,16 @@
     at the repository root.
 
 .PARAMETER SkipBuild
-    Skip `cargo build` and package the existing target\release\sonos-driver.exe. The
-    build fails fast if that binary is missing.
+    Skip `cargo build` and package the existing target\release binaries. The build fails
+    fast if any of them is missing.
+
+.PARAMETER IncludeDriver
+    Also bundle the kernel-driver mode: the sonosvad driver package and the scripts that
+    install it. The driver must already have been built AND signed
+    (driver\scripts\Build-Driver.ps1 then Sign-Driver.ps1) - this script never builds or
+    signs a driver itself, because that needs the WDK and a certificate the release
+    machine may not have. Missing artifacts are a hard error rather than a silent
+    omission, so a release can never claim to contain a driver it does not.
 
 .EXAMPLE
     pwsh -File scripts/package.ps1
@@ -43,7 +61,11 @@
 
 .EXAMPLE
     pwsh -File scripts/package.ps1 -SkipBuild -OutputDir C:\releases
-    Packages the already-built binary into C:\releases without rebuilding.
+    Packages the already-built binaries into C:\releases without rebuilding.
+
+.EXAMPLE
+    pwsh -File scripts/package.ps1 -IncludeDriver
+    Bundles the signed sonosvad driver and its scripts alongside the user-mode payload.
 
 .NOTES
     Windows / PowerShell 5.1+ or PowerShell 7+. Uses only built-in cmdlets
@@ -52,7 +74,8 @@
 [CmdletBinding()]
 param(
     [string] $OutputDir,
-    [switch] $SkipBuild
+    [switch] $SkipBuild,
+    [switch] $IncludeDriver
 )
 
 Set-StrictMode -Version Latest
@@ -89,9 +112,19 @@ $version = $verMatch.Groups[1].Value
 Write-Host "sonos-driver version: $version" -ForegroundColor Cyan
 
 # --- Build (unless skipped) --------------------------------------------------
-$cliExe = Join-Path $repoRoot 'target\release\sonos-driver.exe'
-$guiExe = Join-Path $repoRoot 'target\release\sonos-driver-gui.exe'
-$binaries = @($cliExe, $guiExe)
+# Every mode the docs describe ships in the payload, so nobody has to install a Rust
+# toolchain to run the service they were just told to install.
+$cliExe  = Join-Path $repoRoot 'target\release\sonos-driver.exe'
+$guiExe  = Join-Path $repoRoot 'target\release\sonos-router.exe'
+$castSvc = Join-Path $repoRoot 'target\release\sonos-cast-svc.exe'
+$vadSvc  = Join-Path $repoRoot 'target\release\sonosvad-svc.exe'
+
+$packages = @('sonos-driver-cli', 'sonos-driver-gui', 'sonos-cast-service')
+$binaries = @($cliExe, $guiExe, $castSvc)
+if ($IncludeDriver) {
+    $packages += 'sonos-vad-service'
+    $binaries += $vadSvc
+}
 
 if ($SkipBuild) {
     Write-Host 'Skipping build (-SkipBuild).' -ForegroundColor Yellow
@@ -101,10 +134,12 @@ if ($SkipBuild) {
         }
     }
 } else {
-    Write-Host 'Building release binaries: cargo build --release -p sonos-driver-cli -p sonos-driver-gui' -ForegroundColor Cyan
+    $pkgArgs = @()
+    foreach ($p in $packages) { $pkgArgs += '-p'; $pkgArgs += $p }
+    Write-Host "Building release binaries: cargo build --release $($pkgArgs -join ' ')" -ForegroundColor Cyan
     Push-Location $repoRoot
     try {
-        & cargo build --release -p sonos-driver-cli -p sonos-driver-gui
+        & cargo build --release @pkgArgs
         if ($LASTEXITCODE -ne 0) {
             throw "cargo build failed with exit code $LASTEXITCODE. " +
                   'Ensure the MSVC environment is initialised (see README "Building").'
@@ -116,6 +151,36 @@ if ($SkipBuild) {
         if (-not (Test-Path $exe)) {
             throw "Build reported success but '$exe' is missing."
         }
+    }
+}
+
+# --- Locate the driver package, if requested ---------------------------------
+# The driver is built and signed by driver\scripts, not here: that needs the WDK and a
+# certificate. A release that claims to ship a driver must actually contain a *signed*
+# one, so anything missing is fatal rather than a warning.
+$driverArtifacts = @()
+$driverScripts   = @()
+if ($IncludeDriver) {
+    $driverOut = Join-Path $repoRoot 'driver\sonosvad\artifacts\x64\Release'
+    foreach ($name in @('sonosvad.sys', 'sonosvad.inf', 'sonosvad.cat')) {
+        $path = Join-Path $driverOut $name
+        if (-not (Test-Path $path)) {
+            throw ("-IncludeDriver was set but '$path' is missing. Run " +
+                   'driver\scripts\Build-Driver.ps1 and then Sign-Driver.ps1 first.')
+        }
+        $driverArtifacts += $path
+    }
+
+    $sig = Get-AuthenticodeSignature (Join-Path $driverOut 'sonosvad.sys')
+    if ($sig.Status -eq 'NotSigned') {
+        throw ('sonosvad.sys is not signed. Run driver\scripts\Sign-Driver.ps1 before ' +
+               'packaging, or the payload cannot be installed on any machine.')
+    }
+    Write-Host "Driver signature status: $($sig.Status)" -ForegroundColor Cyan
+
+    $driverScripts = @(Get-ChildItem (Join-Path $repoRoot 'driver\scripts') -Filter '*.ps1' -File)
+    if ($driverScripts.Count -eq 0) {
+        throw 'No install scripts found under driver\scripts.'
     }
 }
 
@@ -139,10 +204,83 @@ $stageDir  = Join-Path $stageRoot $stageName
 New-Item -ItemType Directory -Path $stageDir -Force | Out-Null
 
 try {
-    Copy-Item $cliExe (Join-Path $stageDir 'sonos-driver.exe')
-    Copy-Item $guiExe (Join-Path $stageDir 'sonos-driver-gui.exe')
+    Copy-Item $cliExe  (Join-Path $stageDir 'sonos-driver.exe')
+    Copy-Item $guiExe  (Join-Path $stageDir 'sonos-router.exe')
+    Copy-Item $castSvc (Join-Path $stageDir 'sonos-cast-svc.exe')
     foreach ($f in $files) {
         Copy-Item $f.Src (Join-Path $stageDir $f.Name)
+    }
+
+    if ($IncludeDriver) {
+        $driverDir  = Join-Path $stageDir 'driver'
+        $scriptsDir = Join-Path $driverDir 'scripts'
+        New-Item -ItemType Directory -Path $scriptsDir -Force | Out-Null
+
+        Copy-Item $vadSvc (Join-Path $stageDir 'sonosvad-svc.exe')
+        foreach ($a in $driverArtifacts) {
+            Copy-Item $a (Join-Path $driverDir (Split-Path -Leaf $a))
+        }
+        foreach ($s in $driverScripts) {
+            Copy-Item $s.FullName (Join-Path $scriptsDir $s.Name)
+        }
+        $driverReadme = Join-Path $repoRoot 'driver\README.md'
+        if (Test-Path $driverReadme) {
+            Copy-Item $driverReadme (Join-Path $driverDir 'README.md')
+        }
+
+        # The payload's layout is flat, not the repo's build-output tree, so the
+        # scripts need explicit paths. Spell them out rather than making the reader
+        # work it out from a script's -InfPath default.
+        $installNote = @'
+# Installing the sonosvad driver from this package
+
+The driver here is already built and **test-signed**. You still need test signing
+enabled on the machine, which requires Secure Boot to be **off** and a reboot.
+That is a real security trade-off - make it deliberately. If you would rather not,
+run `sonos-router.exe` instead: it needs none of this.
+
+From an **elevated** PowerShell prompt, in this file's parent folder (the one
+containing sonos-router.exe):
+
+```powershell
+.\driver\scripts\Enable-TestSigning.ps1          # reboots the machine
+
+# after the reboot, back in the same folder:
+.\driver\scripts\Install-Driver.ps1 `
+    -InfPath    .\driver\sonosvad.inf `
+    -ServiceExe .\sonosvad-svc.exe
+Start-Service sonosvad
+```
+
+Add `-SeedHost <ip-of-any-sonos-player>` to Install-Driver.ps1 if your network
+blocks SSDP multicast and discovery finds nothing.
+
+Your rooms then appear in **Settings > System > Sound**, plus **All Sonos**.
+
+## Checking the package before you trust it
+
+```powershell
+.\driver\scripts\Test-Driver.ps1 -ArtifactDir .\driver
+```
+
+## Removing it
+
+```powershell
+.\driver\scripts\Uninstall-Driver.ps1 -InfPath .\driver\sonosvad.inf
+.\driver\scripts\Disable-TestSigning.ps1         # reboots; re-enable Secure Boot after
+```
+
+Uninstall-Driver.ps1 releases any rooms this tool grouped before removing anything,
+so your speakers are not left in a party.
+
+Full documentation: docs/DRIVER-SETUP.md in the repository.
+'@
+        [System.IO.File]::WriteAllText(
+            (Join-Path $driverDir 'INSTALL.md'),
+            $installNote,
+            (New-Object System.Text.UTF8Encoding($false)))
+
+        Write-Host "Bundled the sonosvad driver package ($($driverScripts.Count) scripts)." -ForegroundColor Cyan
     }
 
     # Generate the example config from the binary itself so it can never drift.

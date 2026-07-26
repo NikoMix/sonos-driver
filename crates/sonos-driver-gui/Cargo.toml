@@ -1,10 +1,9 @@
-# `sonos-driver-gui` (WS-J): a Windows system-tray + settings/status desktop
-# application that drives the existing public API of `sonos-driver-core` and
-# `audio-core`. The crate is split into a headless, unit-tested library
-# (`sonos_driver_gui`) and a thin rendering binary (`sonos-driver-gui`).
+# The Sonos Router desktop app: a routing table between every Windows audio
+# output and every Sonos room, applied while it runs. Split into a headless,
+# unit-tested library (`sonos_driver_gui`) and a thin rendering binary.
 [package]
 name = "sonos-driver-gui"
-description = "System-tray desktop GUI for the sonos-driver Windows -> Sonos audio bridge."
+description = "Desktop app that routes each Windows audio output to a Sonos room, with no driver."
 # The GUI stack (eframe 0.34) is edition-2024 and requires rustc 1.92, so this
 # member overrides the workspace MSRV floor of 1.90 while inheriting every other
 # package field. The pinned toolchain (stable) is newer than both.
@@ -26,19 +25,24 @@ name = "sonos_driver_gui"
 path = "src/lib.rs"
 
 [[bin]]
-name = "sonos-driver-gui"
+name = "sonos-router"
 path = "src/main.rs"
 
 [dependencies]
-# Drives the existing bridge orchestration + audio configuration contracts.
+# The routing model and the multi-route streaming worker: the app is a UI for
+# exactly the engine the driverless CLI and the `sonoscast` service already run,
+# so a route behaves identically however it was configured.
+sonos-cast-service.workspace = true
+sonos-routing.workspace = true
 sonos-driver-core.workspace = true
 audio-core.workspace = true
-# Render-endpoint enumeration for the capture-device picker (binary only). The
-# public `enumerate_render_endpoints()` initialises COM itself, so it is called
-# from a worker thread; on non-Windows it returns an error handled gracefully.
+# Render-endpoint enumeration for the outputs list (binary only). The public
+# `enumerate_render_endpoints()` initialises COM itself, so it is called from a
+# worker thread; on non-Windows it returns an error handled gracefully.
 audio-capture.workspace = true
 
 # Configuration persistence + structured diagnostics (existing workspace deps).
+serde = { workspace = true }
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
