@@ -19,7 +19,8 @@ use std::time::{Duration, Instant};
 
 use sonos_cast_service::WorkerEvent;
 use sonos_driver_gui::{
-    reduce, Action, AppState, CastSupervisor, Destination, Effect, Output, StreamStatus,
+    driver_status, reduce, Action, AppState, CastSupervisor, Destination, Effect, Output,
+    StreamStatus,
 };
 
 /// How long to wait for each of discovery and the first streaming report.
@@ -80,11 +81,25 @@ fn run(args: &Args) -> Result<(), String> {
             )
         })
         .collect();
+    // The same probe the app runs, in the same order, so its result can be seen
+    // on a machine where the driver is installed and on one where it is not.
+    drive(
+        &mut state,
+        Action::VadServiceProbed(driver_status::probe_service()),
+        &mut supervisor,
+    );
     drive(
         &mut state,
         Action::OutputsEnumerated(outputs),
         &mut supervisor,
     );
+    println!(
+        "kernel-driver mode: {} driver endpoint(s), service {:?}",
+        state.driver.endpoints, state.driver.service
+    );
+    if let Some(advice) = state.driver.advice() {
+        println!("  note: {advice}");
+    }
 
     // 2. Rooms, through the real reducer so the effect is the real one.
     for effect in reduce(&mut state, Action::RefreshRooms) {

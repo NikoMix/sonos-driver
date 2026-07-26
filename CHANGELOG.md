@@ -130,6 +130,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rename, and routing such an endpoint raises a warning rather than a block —
   doing it deliberately with the service stopped is legitimate.
   ([#49](https://github.com/NikoMix/sonos-driver/issues/49))
+- **The app reports the state of the kernel-driver mode, and only when that
+  state is worth reporting.** It asks the Service Control Manager what the
+  `sonosvad` service is doing and reads the driver's presence off the enumerated
+  endpoints. Those two facts together catch the states a user cannot diagnose by
+  looking: driver loaded but service stopped (its outputs appear in the sound
+  picker and silently swallow audio), and service installed but driver not
+  loaded (test signing is usually the reason, and Windows says so nowhere).
+  With neither installed — the ordinary case — the app stays silent, and the
+  double-streaming warning is now raised only when the service might actually be
+  streaming, so a deliberate setup with the service stopped is not nagged at.
+  ([#49](https://github.com/NikoMix/sonos-driver/issues/49))
 - **`driver/scripts/Setup-Driver.ps1` — the whole driver setup in one command.**
   Secure Boot check, build, certificate, sign, enable test signing, build the
   services, install, verify. It is convergent rather than a batch file: every step

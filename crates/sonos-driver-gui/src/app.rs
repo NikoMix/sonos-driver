@@ -23,7 +23,8 @@ use sonos_cast_service::WorkerEvent;
 use sonos_driver_gui::config_form::{profile_hint, ALL_PROFILES};
 use sonos_driver_gui::routes::Destination;
 use sonos_driver_gui::{
-    config_io, discovery, reduce, Action, AppState, CastSupervisor, Effect, Output, StreamStatus,
+    config_io, discovery, driver_status, reduce, Action, AppState, CastSupervisor, Effect, Output,
+    StreamStatus,
 };
 use sonos_routing::RouteConfig;
 
@@ -167,6 +168,11 @@ impl GuiApp {
 
     /// Enumerate render endpoints on a background thread. The enumeration
     /// initialises its own COM apartment, so it is never run on the UI thread.
+    ///
+    /// The same thread also asks the Service Control Manager about the
+    /// `sonosvad` service, because the answer is only meaningful next to the
+    /// endpoint list: endpoints say whether the driver is loaded, the service
+    /// says whether anything is driving them.
     fn spawn_enumerate(&self) {
         let actions = self.actions_tx.clone();
         let spawned = thread::Builder::new()
@@ -188,6 +194,9 @@ impl GuiApp {
                     ),
                     Err(err) => Action::OutputScanFailed(err.to_string()),
                 };
+                // Probed first so the service state is already in place when the
+                // endpoint list lands and the advice is recomputed.
+                let _ = actions.send(Action::VadServiceProbed(driver_status::probe_service()));
                 let _ = actions.send(action);
             });
         if let Err(err) = spawned {
@@ -524,9 +533,14 @@ impl GuiApp {
     /// Conflicts (blocking) and warnings (not), each with the fix.
     fn problems(&self, ui: &mut egui::Ui) {
         let conflicts = self.state.table.conflicts();
-        let warnings = self.state.table.warnings();
+        let warnings = self.state.table.warnings(self.state.driver.service);
         let discovery_error = self.state.discovery.error();
-        if conflicts.is_empty() && warnings.is_empty() && discovery_error.is_none() {
+        let driver_advice = self.state.driver.advice();
+        if conflicts.is_empty()
+            && warnings.is_empty()
+            && discovery_error.is_none()
+            && driver_advice.is_none()
+        {
             return;
         }
 
@@ -541,6 +555,15 @@ impl GuiApp {
             ui.horizontal_wrapped(|ui| {
                 ui.colored_label(ui.visuals().warn_fg_color, "⚠");
                 ui.label(&warning.message);
+            });
+        }
+        // The kernel-driver mode is optional and this app never needs it, so its
+        // state is reported as information rather than as a warning — and only
+        // when its two halves disagree. See `DriverStatus::advice`.
+        if let Some(advice) = driver_advice {
+            ui.horizontal_wrapped(|ui| {
+                ui.weak("ℹ");
+                ui.weak(advice);
             });
         }
         if let Some(reason) = discovery_error {

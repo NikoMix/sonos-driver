@@ -13,6 +13,7 @@ use sonos_routing::{RoomKey, RouteConfig, Source};
 
 use crate::config_form::SettingsForm;
 use crate::config_io::default_config_path;
+use crate::driver_status::DriverStatus;
 use crate::routes::{RoutingTable, DEFAULT_OUTPUT_ID};
 
 /// A Windows audio **render** endpoint: one row of the routing table.
@@ -254,6 +255,8 @@ pub struct AppState {
     pub saved_routes: Vec<RouteConfig>,
     /// A one-line status message for the UI footer.
     pub status_line: String,
+    /// What this app can see of the kernel-driver mode, if it is installed.
+    pub driver: DriverStatus,
     /// Where the routing table and settings are loaded from and saved to.
     pub config_path: PathBuf,
 }
@@ -279,6 +282,7 @@ impl AppState {
             settings: SettingsForm::from_config(config),
             saved_routes: Vec::new(),
             status_line: "Looking for outputs and rooms…".to_owned(),
+            driver: DriverStatus::default(),
             config_path,
         }
     }

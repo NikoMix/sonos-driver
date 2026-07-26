@@ -2816,6 +2816,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tray-icon",
+ "windows-service",
 ]
 
 [[package]]

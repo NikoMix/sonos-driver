@@ -54,3 +54,9 @@ eframe.workspace = true
 tray-icon.workspace = true
 muda.workspace = true
 image.workspace = true
+
+# Querying whether the optional `sonosvad` service is installed and running, so
+# the app can tell the user when the two modes overlap. Query-status access
+# needs no elevation. Safe wrapper, so `forbid(unsafe_code)` still holds.
+[target.'cfg(windows)'.dependencies]
+windows-service.workspace = true
