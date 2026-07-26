@@ -198,6 +198,12 @@ speakers.
 - **If no rooms appear**, your network is blocking multicast. Open **Settings**,
   enter the IP of any one Sonos player as the seed host, and rescan; it will
   find the rest from there.
+- **If you also installed the driver**, the app notices. It recognises the
+  driver's own outputs and says so if routing one would send the same audio
+  twice, and it explains the two states you cannot see from the sound picker:
+  driver loaded with its service stopped (its outputs silently discard audio),
+  and service installed with the driver not loaded (usually test signing). If
+  you never installed the driver, it says nothing about it at all.
 
 ### Rooms as Windows outputs (the driver)
 
