@@ -46,6 +46,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     PE/import checks, catalog/signature) plus `Test-DriverOnHost.ps1` for the
     load-dependent checks a sandbox cannot run.
 
+- **A driverless mode**, for machines where installing a driver is not on the
+  table. It does everything the driver does except put rooms in the sound
+  picker — Windows offers no user-mode way to create an audio endpoint, so that
+  one capability is genuinely kernel-only. See
+  [ADR-0019](docs/adr/0019-driverless-routing-mode.md).
+  - **`sonos-driver cast`** streams to one room, several rooms as a synchronised
+    group, or `--all`, with nothing installed, no reboot and Secure Boot left on.
+  - **Per-application routing** via WASAPI process loopback: send Spotify to the
+    kitchen and everything else to the living room, concurrently. This is not
+    possible through the driver at all, because Windows routes by endpoint — so
+    the two modes are complements, not a fallback.
+  - **`sonos-cast-svc`** — a second headless service (`sonoscast`) running the
+    identical worker from `%ProgramData%\sonos-driver\cast.toml`, written for you
+    on install. Both services can be installed at once.
+  - New `sonos-routing` crate: a hardware-free planner that resolves routes
+    against a discovered household, matching rooms by UUID or case-insensitive
+    name (including non-ASCII), allocating a stream port per route, and rejecting
+    two routes that claim the same room with both route numbers named.
+  - **`cast --dry-run`** resolves and prints the plan — rooms, capture mode,
+    ports and group coordinators — without touching a speaker.
+
 - **Foundation for an optional kernel virtual-audio driver** that would enumerate
   **each Sonos room as its own Windows output device** (personal-use, free
   test-signed; the user-mode bridge remains the default product). This phase lands
