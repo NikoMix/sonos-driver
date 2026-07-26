@@ -265,7 +265,7 @@ impl GuiApp {
         let ctx = ui.ctx().clone();
         let mut pending = Vec::new();
 
-        egui::Panel::top("header").show_inside(ui, |ui| {
+        egui::Panel::top("header").show(ui, |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.heading("Sonos Router");
@@ -279,13 +279,13 @@ impl GuiApp {
             ui.add_space(4.0);
         });
 
-        egui::Panel::bottom("status").show_inside(ui, |ui| {
+        egui::Panel::bottom("status").show(ui, |ui| {
             ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| ui.label(&self.state.status_line));
             ui.add_space(4.0);
         });
 
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical().id_salt("body").show(ui, |ui| {
                 self.routing_table(ui, &mut pending);
                 self.problems(ui);

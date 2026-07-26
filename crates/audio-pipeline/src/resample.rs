@@ -11,7 +11,7 @@
 //! input chunk by carrying a small accumulator between calls.
 
 use audioadapter_buffers::direct::InterleavedSlice;
-use rubato::{Fft, FixedSync, Indexing, Resampler};
+use rubato::{Fft, FixedSync, Indexing, Resampler, WindowFunction};
 
 use audio_core::{Error, Result};
 
@@ -69,12 +69,22 @@ impl ResampleStage {
             .map_err(|_| Error::pipeline("input sample rate exceeds platform word size"))?;
         let out_hz = usize::try_from(output_rate)
             .map_err(|_| Error::pipeline("output sample rate exceeds platform word size"))?;
-        let resampler = Fft::<f32>::new(
+        // `new_custom` rather than `new`: rubato 4's simplified constructor
+        // derives the sub-chunk count from the chunk size (`chunk/256`), which
+        // for today's 256-frame chunk happens to give the same 1 we want. That
+        // is a coincidence, not an agreement — raising CHUNK_FRAMES would
+        // silently raise the sub-chunk count and with it the added delay, which
+        // is exactly what SUB_CHUNKS exists to pin down. The window is stated
+        // for the same reason: it is the default, but a default is not a
+        // promise. Both values match what rubato 3 used, so the audio path is
+        // unchanged by the upgrade.
+        let resampler = Fft::<f32>::new_custom(
             in_hz,
             out_hz,
             CHUNK_FRAMES,
             SUB_CHUNKS,
             channels,
+            WindowFunction::BlackmanHarris2,
             FixedSync::Input,
         )
         .map_err(|e| Error::pipeline(format!("failed to construct resampler: {e}")))?;
