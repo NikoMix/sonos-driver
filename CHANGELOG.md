@@ -120,6 +120,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     or installed in CI — it requires the full WDK and a reboot for test-signing.
     ([#44](https://github.com/NikoMix/sonos-driver/issues/44),
     [#45](https://github.com/NikoMix/sonos-driver/issues/45))
+- **The app now recognises endpoints published by the `sonosvad` driver and says
+  so.** With both modes installed, the driver's endpoints appear in the app's
+  output list looking like ordinary outputs — `sonosvad-svc` renames them to room
+  names, so nothing about the name gives them away. Routing one from the app then
+  sends the same audio to the same household twice. Endpoints now carry the
+  adapter that produced them (`EndpointInfo::adapter`, read from
+  `PKEY_DeviceInterface_FriendlyName`), which is the one property a user cannot
+  rename, and routing such an endpoint raises a warning rather than a block —
+  doing it deliberately with the service stopped is legitimate.
+  ([#49](https://github.com/NikoMix/sonos-driver/issues/49))
 - **`driver/scripts/Setup-Driver.ps1` — the whole driver setup in one command.**
   Secure Boot check, build, certificate, sign, enable test signing, build the
   services, install, verify. It is convergent rather than a batch file: every step
