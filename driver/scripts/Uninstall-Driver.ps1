@@ -36,7 +36,7 @@
 param(
     [string] $OemInf,
     [string] $SonosDriverExe,
-    [string] $ServiceExe = (Join-Path $PSScriptRoot '..\..\target\release\sonosvad-svc.exe'),
+    [string] $ServiceExe,
     [switch] $KeepEndpointNames,
     [switch] $KeepService
 )
@@ -45,6 +45,11 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'DriverCommon.ps1')
+
+# $PSScriptRoot is empty inside param() defaults under -File on PS 5.1.
+if (-not $ServiceExe) {
+    $ServiceExe = Join-Path $PSScriptRoot '..\..\target\release\sonosvad-svc.exe'
+}
 
 Write-Host '== Uninstall sonosvad driver ==' -ForegroundColor Cyan
 
@@ -83,7 +88,11 @@ if (-not $KeepService) {
 # ---------------------------------------------------------- 2. release renames
 if (-not $KeepEndpointNames) {
     if (-not $SonosDriverExe) {
-        $SonosDriverExe = (Get-Command 'sonos-driver.exe' -ErrorAction SilentlyContinue).Source
+        # Under StrictMode, dereferencing .Source on the $null that Get-Command
+        # returns when the CLI is not on PATH throws, which would abort the
+        # uninstall before the device node and driver package are removed.
+        $cliCommand = Get-Command 'sonos-driver.exe' -ErrorAction SilentlyContinue
+        if ($cliCommand) { $SonosDriverExe = $cliCommand.Source }
     }
     if ($SonosDriverExe -and (Test-Path -LiteralPath $SonosDriverExe)) {
         # Grouping lives in the speakers, not in Windows: if the service was

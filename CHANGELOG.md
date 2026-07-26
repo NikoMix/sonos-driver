@@ -107,6 +107,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The driver install scripts could not complete an install or an uninstall.**
+  Six defects, found by walking the runbook end to end rather than reading it:
+  - `Sign-Driver.ps1` defaulted `-SysPath` to `driver/_local/sonosvad.sys` and
+    `Install-Driver.ps1` defaulted `-InfPath` to `driver/sonosvad.inf`. Neither
+    path is ever written — `Build-Driver.ps1` emits to
+    `driver/sonosvad/artifacts/<Platform>/<Configuration>/`. Both now resolve
+    through a shared `Get-SonosVadArtifactDir` and honour `-Configuration` /
+    `-Platform`.
+  - `Sign-Driver.ps1` signed only `sonosvad.sys`, leaving `sonosvad.cat` on the
+    throwaway `WDKTestCert` the build generates. `pnputil` validates the
+    **catalog** against Trusted Publishers, so every install was rejected with a
+    bare "third-party INF does not contain digital signature information". It now
+    signs both. (Re-signing the `.sys` does not invalidate the catalog: catalog
+    entries store the Authenticode hash, which excludes the certificate table.)
+  - `Sign-Driver.ps1` searched only the user certificate store, while
+    `New-TestCert.ps1` creates the certificate in `LocalMachine\My`, so signing
+    failed with "No certificates were found that met all the given criteria". It
+    now finds the certificate in either store and passes `/sm` when required.
+  - `$PSScriptRoot` is empty inside `param()` defaults when a script is run via
+    `powershell -File` on PS 5.1, so `New-TestCert.ps1` aborted immediately on an
+    empty `-OutDir`, and `Install-Driver.ps1` / `Uninstall-Driver.ps1` could not
+    locate `sonosvad-svc.exe`. All three now resolve in the script body.
+  - `Uninstall-Driver.ps1` dereferenced `.Source` on the `$null` that
+    `Get-Command` returns when `sonos-driver.exe` is not on `PATH`. Under
+    `Set-StrictMode` that threw and **aborted the uninstall before the device
+    node and driver package were removed**, leaving the driver installed and any
+    All Sonos group un-split. The same hazard in `Get-SonosVadDeviceNode` (which
+    both install and uninstall depend on) and on `Test-DriverOnHost.ps1`'s
+    device-failure path is guarded too.
+- **`README.md` told you to start the wrong service.** The service is named
+  `sonosvad`; `sonosvad-svc` is the executable. The quickstart also duplicated
+  the service registration that `Install-Driver.ps1` already performs.
+
 - **Multi-homed room discovery** (`sonos-control`): SSDP `M-SEARCH` discovery now
   sends from every usable local IPv4 interface, explicitly selecting each as the
   multicast egress interface (`IP_MULTICAST_IF`), instead of relying on the OS

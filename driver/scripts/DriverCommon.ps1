@@ -83,6 +83,28 @@ function Get-Devgen {
     Get-KitTool -Name 'devgen.exe' -SubPaths @('Tools')
 }
 
+function Get-SonosVadArtifactDir {
+    <#
+    .SYNOPSIS
+        The directory Build-Driver.ps1 copies the finished package into.
+    .DESCRIPTION
+        Build output lands in driver/sonosvad/artifacts/<Platform>/<Configuration>,
+        never beside the scripts, so every script that consumes the package has to
+        agree on that. Sign and Install used to guess at paths the build never
+        writes to, which failed only at the point where someone was following the
+        runbook on a real machine.
+    #>
+    [CmdletBinding()]
+    param(
+        [string] $Configuration = 'Release',
+        [string] $Platform = 'x64'
+    )
+
+    $scriptDir = Split-Path -Parent $PSCommandPath
+    $driverDir = (Resolve-Path (Join-Path $scriptDir '..\sonosvad')).Path
+    Join-Path $driverDir "artifacts\$Platform\$Configuration"
+}
+
 function Get-SonosVadDeviceNode {
     <#
     .SYNOPSIS
@@ -99,7 +121,11 @@ function Get-SonosVadDeviceNode {
     Get-PnpDevice -PresentOnly:$false -ErrorAction SilentlyContinue |
         Where-Object { $_.InstanceId -like 'ROOT\MEDIA\*' -or $_.InstanceId -like 'ROOT\SONOSVAD\*' } |
         Where-Object {
-            $hwids = (Get-PnpDeviceProperty -InstanceId $_.InstanceId -KeyName 'DEVPKEY_Device_HardwareIds' -ErrorAction SilentlyContinue).Data
+            # A half-removed node can be missing the property entirely, and under
+            # StrictMode dereferencing .Data on the resulting $null throws --
+            # which would abort the very install/uninstall that has to clean it up.
+            $property = Get-PnpDeviceProperty -InstanceId $_.InstanceId -KeyName 'DEVPKEY_Device_HardwareIds' -ErrorAction SilentlyContinue
+            $hwids = if ($property) { $property.Data } else { $null }
             $hwids -and ($hwids -join ';') -match 'sonosvad'
         } |
         Select-Object -First 1

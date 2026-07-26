@@ -156,15 +156,15 @@ one-time reboot to enable test signing.
 .\driver\scripts\Enable-TestSigning.ps1
 .\driver\scripts\New-TestCert.ps1
 
-# 2. Build, sign and install the driver.
+# 2. Build and sign the driver.
 .\driver\scripts\Build-Driver.ps1
 .\driver\scripts\Sign-Driver.ps1
-.\driver\scripts\Install-Driver.ps1
 
-# 3. Install the service that binds endpoints to rooms and streams to them.
+# 3. Build the service, then install both. Install-Driver.ps1 stages the
+#    driver, creates its device node, and registers the service for you.
 cargo build --release -p sonos-vad-service
-.\target\release\sonosvad-svc.exe install
-Start-Service sonosvad-svc
+.\driver\scripts\Install-Driver.ps1
+Start-Service sonosvad
 ```
 
 Open **Settings → System → Sound** and your rooms are there, plus **All Sonos**.
@@ -174,8 +174,9 @@ Pick one and play something. To undo it all, run
 
 If discovery finds nothing — common on networks that block multicast — point the
 service at any one player and it will find the rest:
-`sonosvad-svc install --seed-host 192.168.1.50`. Full runbook, including
-verification and rollback, in [docs/DRIVER-SETUP.md](docs/DRIVER-SETUP.md).
+`.\driver\scripts\Install-Driver.ps1 -SeedHost 192.168.1.50`. Full runbook,
+including verification and rollback, in
+[docs/DRIVER-SETUP.md](docs/DRIVER-SETUP.md).
 
 ### Driverless mode (no install, no reboot)
 

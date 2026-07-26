@@ -282,7 +282,10 @@ function Invoke-Install {
         if (-not $node) { throw 'no ROOT\sonosvad device node was created' }
         Write-Host "   $($node.InstanceId)  status=$($node.Status)"
         if ($node.Status -ne 'OK') {
-            $problem = (Get-PnpDeviceProperty -InstanceId $node.InstanceId -KeyName 'DEVPKEY_Device_ProblemCode' -ErrorAction SilentlyContinue).Data
+            # Reading the problem code must not itself throw: this is the error
+            # path, and a StrictMode failure here would mask the real diagnostic.
+            $property = Get-PnpDeviceProperty -InstanceId $node.InstanceId -KeyName 'DEVPKEY_Device_ProblemCode' -ErrorAction SilentlyContinue
+            $problem = if ($property) { $property.Data } else { 'unavailable' }
             throw "device did not start (status=$($node.Status), problem code=$problem). Check setupapi.dev.log and the System event log."
         }
     }

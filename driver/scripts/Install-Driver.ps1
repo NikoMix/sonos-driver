@@ -21,7 +21,12 @@
     After a successful install the endpoints appear in Sound -> Output as
     "Sonos Output 1..N"; `sonos-driver vad bind` renames them to your rooms.
 .PARAMETER InfPath
-    Path to sonosvad.inf.
+    Path to sonosvad.inf. Defaults to the build's artifact directory, which is
+    where Build-Driver.ps1 puts the signed package.
+.PARAMETER Configuration
+    Build configuration whose artifacts to install. Release (default) or Debug.
+.PARAMETER Platform
+    Build platform whose artifacts to install. x64 (default) or ARM64.
 .PARAMETER HardwareId
     The root hardware ID declared in the INF.
 .PARAMETER InstanceId
@@ -46,12 +51,19 @@
 #>
 [CmdletBinding()]
 param(
-    [string] $InfPath = (Join-Path $PSScriptRoot '..\sonosvad.inf'),
+    [string] $InfPath,
+
+    [ValidateSet('Release', 'Debug')]
+    [string] $Configuration = 'Release',
+
+    [ValidateSet('x64', 'ARM64')]
+    [string] $Platform = 'x64',
+
     [string] $HardwareId = 'ROOT\sonosvad',
     [string] $InstanceId = 'sonosvad',
     [switch] $SkipDeviceNode,
     [switch] $SkipService,
-    [string] $ServiceExe = (Join-Path $PSScriptRoot '..\..\target\release\sonosvad-svc.exe'),
+    [string] $ServiceExe,
     [string] $SeedHost
 )
 
@@ -60,10 +72,18 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'DriverCommon.ps1')
 
+# $PSScriptRoot is empty inside param() defaults under -File on PS 5.1.
+if (-not $ServiceExe) {
+    $ServiceExe = Join-Path $PSScriptRoot '..\..\target\release\sonosvad-svc.exe'
+}
+
 Write-Host '== Install sonosvad driver ==' -ForegroundColor Cyan
 
+if (-not $InfPath) {
+    $InfPath = Join-Path (Get-SonosVadArtifactDir -Configuration $Configuration -Platform $Platform) 'sonosvad.inf'
+}
 if (-not (Test-Path -LiteralPath $InfPath)) {
-    throw "INF not found: $InfPath"
+    throw "INF not found: $InfPath. Run Build-Driver.ps1 and Sign-Driver.ps1 first."
 }
 $InfPath = (Resolve-Path -LiteralPath $InfPath).Path
 
