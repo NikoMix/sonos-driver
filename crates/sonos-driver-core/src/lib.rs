@@ -37,7 +37,7 @@ pub use group::{disband, GroupPlayer};
 pub use latency::ControllableLatency;
 pub use multiroom::{sessions_for, sessions_for_all, MultiRoomBridge, RoomSession, SessionTarget};
 pub use player::PlayerControl;
-pub use rooms::{discover_rooms, is_non_coordinator, rooms_from_topology};
+pub use rooms::{apply_seed_host, discover_rooms, is_non_coordinator, rooms_from_topology};
 pub use sonos_vad_control as vad;
 pub use sonos_vad_endpoint as vad_endpoint;
 

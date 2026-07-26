@@ -5,9 +5,35 @@
 
 use std::time::Duration;
 
-use audio_core::{Error, Result};
+use audio_core::{Config, Error, Result};
 use sonos_control::{self as control, ZoneGroup};
 use sonos_vad_control::RoomKey;
+
+/// Resolve the effective seed host and fold it into `config`.
+///
+/// A seed may arrive two ways: as a command-line flag / service argument
+/// (`arg`), or from the configuration file (`config.sonos.seed_host`). The flag
+/// wins, and blank values are treated as absent.
+///
+/// Writing the result *back* into `config` is the point of this function, not a
+/// side effect. Both service hosts resolve the seed once for discovery, then
+/// hand `config` to [`MultiRoomBridge`](crate::MultiRoomBridge) as the template
+/// every per-room session is cloned from — and a single-room bridge later
+/// resolves its own player from `sonos.seed_host`. Leaving the file's (often
+/// absent) value in the template silently downgraded those bridges to SSDP
+/// multicast even though the caller had named a seed, which fails on any
+/// network that does not carry multicast.
+///
+/// Returns the resolved seed for the caller's own discovery calls.
+pub fn apply_seed_host(arg: Option<&str>, config: &mut Config) -> Option<String> {
+    let seed = arg
+        .or(config.sonos.seed_host.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    config.sonos.seed_host.clone_from(&seed);
+    seed
+}
 
 /// Discover Sonos rooms, de-duplicated to one entry per zone-group coordinator
 /// where the topology is available.
@@ -110,6 +136,57 @@ mod tests {
     #[test]
     fn a_lone_player_is_never_a_non_coordinator() {
         assert!(!is_non_coordinator(&[group("A", &["A"])], "A"));
+    }
+
+    #[test]
+    fn a_seed_argument_overrides_the_configured_one() {
+        let mut config = Config::default();
+        config.sonos.seed_host = Some("192.168.1.10".to_owned());
+
+        let seed = apply_seed_host(Some("192.168.1.99"), &mut config);
+
+        assert_eq!(seed.as_deref(), Some("192.168.1.99"));
+        assert_eq!(config.sonos.seed_host.as_deref(), Some("192.168.1.99"));
+    }
+
+    #[test]
+    fn a_seed_argument_reaches_the_session_template() {
+        // The regression this guards: the seed used to be resolved for
+        // discovery only, leaving `sonos.seed_host` unset in the template every
+        // per-room bridge is cloned from. Those bridges then fell back to SSDP
+        // multicast and failed on networks that do not carry it, even though
+        // discovery itself had just succeeded over unicast.
+        let mut config = Config::default();
+        assert!(config.sonos.seed_host.is_none());
+
+        let seed = apply_seed_host(Some("192.168.1.10"), &mut config);
+
+        assert_eq!(seed.as_deref(), Some("192.168.1.10"));
+        assert_eq!(config.sonos.seed_host.as_deref(), Some("192.168.1.10"));
+    }
+
+    #[test]
+    fn a_configured_seed_survives_an_absent_argument() {
+        let mut config = Config::default();
+        config.sonos.seed_host = Some("  192.168.1.10  ".to_owned());
+
+        let seed = apply_seed_host(None, &mut config);
+
+        // Trimmed, so the value the bridge dials matches the one discovery used.
+        assert_eq!(seed.as_deref(), Some("192.168.1.10"));
+        assert_eq!(config.sonos.seed_host.as_deref(), Some("192.168.1.10"));
+    }
+
+    #[test]
+    fn a_blank_seed_is_treated_as_absent() {
+        let mut config = Config::default();
+        config.sonos.seed_host = Some("   ".to_owned());
+
+        // Blank must clear rather than persist: an empty string is not a host,
+        // and leaving it set would send the bridge to a nonsense address
+        // instead of falling back to multicast discovery.
+        assert_eq!(apply_seed_host(Some("  "), &mut config), None);
+        assert_eq!(config.sonos.seed_host, None);
     }
 
     #[test]

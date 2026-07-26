@@ -88,7 +88,7 @@ pub fn run(settings: &WorkerSettings, stop: &StopHandle) {
 
 /// One full plan-and-stream cycle.
 fn run_once(settings: &WorkerSettings, stop: &StopHandle) -> anyhow::Result<()> {
-    let (config, file_routes) = crate::config::load(settings.config_path.as_deref())?;
+    let (mut config, file_routes) = crate::config::load(settings.config_path.as_deref())?;
     let routes = settings.routes.clone().unwrap_or(file_routes);
     if routes.is_empty() {
         anyhow::bail!(
@@ -101,13 +101,7 @@ fn run_once(settings: &WorkerSettings, stop: &StopHandle) -> anyhow::Result<()> 
         );
     }
 
-    let seed = settings
-        .seed_host
-        .as_deref()
-        .or(config.sonos.seed_host.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned);
+    let seed = sonos_driver_core::apply_seed_host(settings.seed_host.as_deref(), &mut config);
 
     tracing::info!(seed = ?seed, "discovering Sonos household");
     let rooms = discover_rooms(seed.as_deref(), settings.discovery_timeout)
