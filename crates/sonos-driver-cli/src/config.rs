@@ -45,6 +45,9 @@ pub(crate) fn apply_stream_overrides(mut config: Config, args: &StreamArgs) -> C
     if let Some(uuid) = &args.uuid {
         config.sonos.uuid = Some(uuid.clone());
     }
+    if let Some(seed) = &args.seed_host {
+        config.sonos.seed_host = Some(seed.clone());
+    }
     if let Some(profile) = args.profile {
         config.stream.profile = profile.into();
     }
@@ -204,6 +207,7 @@ mod tests {
         StreamArgs {
             room: None,
             uuid: None,
+            seed_host: None,
             profile: None,
             device: None,
             process: None,

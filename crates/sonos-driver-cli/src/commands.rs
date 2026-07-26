@@ -46,8 +46,10 @@ pub(crate) fn run_profiles() {
 /// role/coordinator information when the topology is available.
 pub(crate) fn run_list(args: &ListArgs) -> anyhow::Result<()> {
     let timeout = Duration::from_secs(args.timeout);
-    let devices = control::discover(timeout).context("discovering Sonos devices")?;
-    let groups = control::discover_zone_groups(timeout).unwrap_or_else(|err| {
+    let seed = args.seed_host.as_deref();
+    let devices =
+        control::discover_household(seed, timeout).context("discovering Sonos devices")?;
+    let groups = control::household_zone_groups(seed, timeout).unwrap_or_else(|err| {
         tracing::debug!(%err, "zone-group topology unavailable; listing without group info");
         Vec::new()
     });
@@ -109,7 +111,7 @@ fn start_bridge(config: Config) -> anyhow::Result<()> {
 }
 
 /// Install a Ctrl-C / console-close handler that signals `handle` to stop.
-fn install_ctrl_c(handle: StopHandle) -> anyhow::Result<()> {
+pub(crate) fn install_ctrl_c(handle: StopHandle) -> anyhow::Result<()> {
     ctrlc::set_handler(stop_signal_handler(handle)).context("installing the Ctrl-C handler")?;
     Ok(())
 }
@@ -136,48 +138,17 @@ fn resolve_stop_controller(
     args: &StopArgs,
     timeout: Duration,
 ) -> anyhow::Result<control::SonosController> {
+    let seed = args.seed_host.as_deref();
     if let Some(room) = args.room.as_deref() {
-        return control::controller_for_room(timeout, room)
+        return control::controller_for_room(seed, timeout, room)
             .with_context(|| format!("resolving room '{room}'"));
     }
     let uuid = args
         .uuid
         .as_deref()
         .ok_or_else(|| anyhow!("a target room or uuid is required"))?;
-    controller_for_uuid(timeout, uuid)
-}
-
-/// Resolve a device UUID to a controller for the coordinator that drives its
-/// group, falling back to a direct controller if the device isn't grouped.
-fn controller_for_uuid(timeout: Duration, uuid: &str) -> anyhow::Result<control::SonosController> {
-    let groups =
-        control::discover_zone_groups(timeout).context("discovering Sonos zone topology")?;
-    if let Some(group) = groups
-        .iter()
-        .find(|g| g.members.iter().any(|m| m.uuid.eq_ignore_ascii_case(uuid)))
-    {
-        if let Some(coord) = group.coordinator().or_else(|| group.members.first()) {
-            let ip = coord.ip().ok_or_else(|| {
-                anyhow!("group coordinator for UUID '{uuid}' has no usable IPv4 address")
-            })?;
-            let device = control::fetch_device(&coord.location, timeout).unwrap_or_else(|_| {
-                control::SonosDevice {
-                    uuid: coord.uuid.clone(),
-                    room_name: coord.zone_name.clone(),
-                    model_name: "Sonos".to_owned(),
-                    ip,
-                }
-            });
-            return Ok(control::SonosController::new(device));
-        }
-    }
-
-    let device = control::discover(timeout)
-        .context("discovering Sonos devices")?
-        .into_iter()
-        .find(|d| d.uuid.eq_ignore_ascii_case(uuid))
-        .ok_or_else(|| anyhow!("no Sonos device with UUID '{uuid}' was found"))?;
-    Ok(control::SonosController::new(device))
+    control::controller_for_uuid(seed, timeout, uuid)
+        .with_context(|| format!("resolving uuid '{uuid}'"))
 }
 
 /// Handle the `config` subcommand family.

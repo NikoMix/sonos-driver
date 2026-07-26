@@ -24,6 +24,8 @@ use audio_core::{
 use audio_pipeline::Pipeline;
 use stream_server::{ServerConfig, StreamServer};
 
+use crate::arbiter::Arbitration;
+use crate::idle::{IdleAction, IdleTracker};
 use crate::latency::LatencyAccumulator;
 use crate::metrics::SharedMetrics;
 use crate::player::PlayerControl;
@@ -48,6 +50,7 @@ pub(crate) fn run_session(
     stop: &Arc<AtomicBool>,
     metrics: &Arc<SharedMetrics>,
     latency: &Arc<LatencyAccumulator>,
+    arbitration: Option<&Arbitration>,
 ) -> Result<()> {
     // A stop requested before we start is honoured as an immediate clean no-op.
     if stop.load(Ordering::SeqCst) {
@@ -75,6 +78,21 @@ pub(crate) fn run_session(
 
     tracing::info!(%stream_url, %content_type, output_rate, "bridge session starting");
 
+    // Shared between the encode thread (which observes every block) and the
+    // supervisor below (which acts on the transitions).
+    let idle = Arc::new(IdleTracker::new(
+        config.idle.stop_after(),
+        config.idle.silence_threshold(),
+    ));
+    if idle.is_enabled() {
+        tracing::info!(
+            release_after_secs = config.idle.stop_after_secs,
+            "idle release enabled; the room is handed back while Windows is silent"
+        );
+    } else {
+        tracing::info!("idle release disabled; the room stays occupied for the whole session");
+    }
+
     // Spawn the capture → pipeline → encode → publish loop.
     let worker = EncodeWorker {
         source,
@@ -85,6 +103,7 @@ pub(crate) fn run_session(
         stop: Arc::clone(stop),
         metrics: Arc::clone(metrics),
         latency: Arc::clone(latency),
+        idle: Arc::clone(&idle),
     };
     let handle = thread::Builder::new()
         .name("bridge-encode".to_owned())
@@ -99,8 +118,12 @@ pub(crate) fn run_session(
         server.stop();
         return Err(error);
     }
+    idle.mark_resumed();
 
     // Supervise until a stop is requested or the encode loop ends on its own.
+    if let Some(arbitration) = arbitration {
+        arbitration.claim();
+    }
     supervise(
         &server,
         &handle,
@@ -108,7 +131,13 @@ pub(crate) fn run_session(
         &stream_url,
         stop,
         metrics,
+        &idle,
+        arbitration,
     );
+
+    if let Some(arbitration) = arbitration {
+        arbitration.release();
+    }
 
     // Graceful teardown: stop the loop, join it, stop the player, stop the
     // server. The worker's own result is the session's result.
@@ -144,12 +173,18 @@ fn resolve_stream_url(server: &StreamServer, control: &dyn PlayerControl) -> Str
     )
 }
 
-/// Poll until a stop is requested or the encode thread finishes, re-pointing the
-/// player if a previously connected client drops away for long enough.
+/// Poll until a stop is requested or the encode thread finishes, releasing the
+/// room while Windows is silent and re-pointing the player if a previously
+/// connected client drops away for long enough.
 ///
 /// Reconnection is best-effort telemetry: a transient client drop on the LAN
 /// should not end the session, and a debounce avoids thrashing on a clean
 /// disconnect that is immediately followed by teardown.
+///
+/// The two mechanisms have to be aware of each other, because releasing the
+/// room *causes* a client drop: without the `is_released` guard the reconnect
+/// logic would immediately grab the speakers back and idle release would never
+/// hold.
 fn supervise(
     server: &StreamServer,
     handle: &thread::JoinHandle<Result<()>>,
@@ -157,43 +192,190 @@ fn supervise(
     stream_url: &str,
     stop: &Arc<AtomicBool>,
     metrics: &Arc<SharedMetrics>,
+    idle: &IdleTracker,
+    arbitration: Option<&Arbitration>,
 ) {
     const POLL: Duration = Duration::from_millis(50);
     const RECONNECT_DEBOUNCE: Duration = Duration::from_millis(750);
 
     let content_type = server.config().content_type.clone();
-    let mut seen_client = false;
-    let mut dropped_at: Option<Instant> = None;
+    let mut state = SupervisorState::new();
 
     while !stop.load(Ordering::SeqCst) && !handle.is_finished() {
         thread::sleep(POLL);
 
+        match idle.poll() {
+            IdleAction::Release => {
+                tracing::info!("no audio; releasing the room");
+                if let Err(error) = control.stop() {
+                    tracing::warn!(%error, "failed to stop the player for idle release");
+                }
+                // Hand the rooms back so a session that is still playing can
+                // pick them up instead of leaving them silent.
+                if let Some(arbitration) = arbitration {
+                    arbitration.release();
+                }
+                state.active_rooms = None;
+                state.preempted = false;
+                // The player disconnecting is the expected consequence, not a
+                // fault to reconnect from.
+                state.forget_client();
+                continue;
+            }
+            IdleAction::Resume => {
+                tracing::info!("audio resumed; reclaiming the room");
+                // Audio starting is what wins an argument, so claim before
+                // touching the player: this is the moment that outranks
+                // whoever was playing.
+                if let Some(arbitration) = arbitration {
+                    arbitration.claim();
+                }
+                state.active_rooms = None;
+                state.preempted = false;
+                match start_playback(control, stream_url, &content_type) {
+                    Ok(()) => metrics.inc_reconnects(),
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to resume playback after idle");
+                        // Try again on the next audible poll rather than
+                        // staying silently released for the rest of the
+                        // session.
+                        idle.mark_released_for_retry();
+                    }
+                }
+                state.forget_client();
+                continue;
+            }
+            IdleAction::None => {}
+        }
+
+        // While released we deliberately have no client; that is not a drop.
+        if idle.is_released() {
+            continue;
+        }
+
+        if let Some(arbitration) = arbitration {
+            if !apply_ownership(
+                arbitration,
+                control,
+                stream_url,
+                &content_type,
+                metrics,
+                &mut state,
+            ) {
+                continue;
+            }
+        }
+
         if server.metrics().connected_clients > 0 {
-            seen_client = true;
-            dropped_at = None;
+            state.seen_client = true;
+            state.dropped_at = None;
             continue;
         }
 
-        if !seen_client {
+        if !state.seen_client {
             continue;
         }
 
-        match dropped_at {
-            None => dropped_at = Some(Instant::now()),
+        match state.dropped_at {
+            None => state.dropped_at = Some(Instant::now()),
             Some(since) if since.elapsed() >= RECONNECT_DEBOUNCE => {
                 match start_playback(control, stream_url, &content_type) {
                     Ok(()) => {
                         metrics.inc_reconnects();
+                        idle.mark_resumed();
                         tracing::info!("re-pointed the player after a client drop");
                     }
                     Err(error) => tracing::warn!(%error, "player reconnect attempt failed"),
                 }
-                seen_client = false;
-                dropped_at = None;
+                state.forget_client();
             }
             Some(_) => {}
         }
     }
+}
+
+/// The bits of [`supervise`] that have to survive from one poll tick to the
+/// next.
+struct SupervisorState {
+    /// A client has connected at least once since playback last started.
+    seen_client: bool,
+    /// When the last client went away, for the reconnect debounce.
+    dropped_at: Option<Instant>,
+    /// Rooms last handed to the player, so an unchanged membership costs
+    /// nothing.
+    active_rooms: Option<Vec<String>>,
+    /// Another output currently owns every room this session wanted.
+    preempted: bool,
+}
+
+impl SupervisorState {
+    fn new() -> Self {
+        Self {
+            seen_client: false,
+            dropped_at: None,
+            active_rooms: None,
+            preempted: false,
+        }
+    }
+
+    /// Forget the current client. Called whenever *we* stop or restart
+    /// playback, so the disconnect we just caused is not mistaken for a fault
+    /// worth reconnecting from.
+    fn forget_client(&mut self) {
+        self.seen_client = false;
+        self.dropped_at = None;
+    }
+}
+
+/// Brings the player in line with the shared ownership map.
+///
+/// Returns `false` when this session owns nothing right now, meaning the rest
+/// of the tick has nothing to supervise.
+fn apply_ownership(
+    arbitration: &Arbitration,
+    control: &dyn PlayerControl,
+    stream_url: &str,
+    content_type: &str,
+    metrics: &SharedMetrics,
+    state: &mut SupervisorState,
+) -> bool {
+    let owned = arbitration.reconcile();
+
+    if owned.is_empty() {
+        if !state.preempted {
+            tracing::info!("another output took every room; standing down");
+            if let Err(error) = control.stop() {
+                tracing::warn!(%error, "failed to stop the player after pre-emption");
+            }
+            state.preempted = true;
+            state.active_rooms = None;
+            state.forget_client();
+        }
+        return false;
+    }
+
+    if state.preempted {
+        tracing::info!(rooms = owned.len(), "rooms came back; resuming");
+        if let Err(error) = start_playback(control, stream_url, content_type) {
+            tracing::warn!(%error, "failed to resume after pre-emption");
+            return false;
+        }
+        metrics.inc_reconnects();
+        state.preempted = false;
+        state.forget_client();
+    }
+
+    // Only the aggregate output acts on this; for a single room it is a no-op,
+    // which is why it is safe to call unconditionally.
+    if state.active_rooms.as_ref() != Some(&owned) {
+        if let Err(error) = control.set_active_rooms(&owned) {
+            tracing::warn!(%error, "failed to regroup after an ownership change");
+        } else {
+            state.active_rooms = Some(owned);
+        }
+    }
+
+    true
 }
 
 /// Owns the source, encoder and sink and runs the encode loop on its own
@@ -207,6 +389,7 @@ struct EncodeWorker {
     stop: Arc<AtomicBool>,
     metrics: Arc<SharedMetrics>,
     latency: Arc<LatencyAccumulator>,
+    idle: Arc<IdleTracker>,
 }
 
 impl EncodeWorker {
@@ -247,6 +430,10 @@ impl EncodeWorker {
                 Ok(Some(frame)) => {
                     let origin = frame.captured_at().unwrap_or_else(Instant::now);
                     self.metrics.inc_captured();
+                    // Observed before the pipeline, so the answer reflects what
+                    // Windows actually played rather than a resampler's
+                    // warm-up or the jitter buffer's fill state.
+                    self.idle.observe(&frame);
                     let processed = pipeline.process(frame)?;
                     self.publish(pipeline, processed, origin, out)?;
                 }
@@ -314,5 +501,179 @@ impl EncodeWorker {
             self.metrics.set_underruns(jitter.underruns());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::{apply_ownership, SupervisorState};
+    use crate::arbiter::{Arbiter, Arbitration, SessionId};
+    use crate::metrics::SharedMetrics;
+    use crate::player::PlayerControl;
+    use audio_core::Result;
+    use std::sync::Arc;
+
+    /// Records what the supervisor asked of the player, standing in for a real
+    /// Sonos coordinator.
+    #[derive(Default)]
+    struct SpyPlayer {
+        stops: Mutex<u32>,
+        plays: Mutex<u32>,
+        rooms: Mutex<Vec<Vec<String>>>,
+    }
+
+    impl PlayerControl for SpyPlayer {
+        fn set_stream_uri(&self, _stream_url: &str, _content_type: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn play(&self) -> Result<()> {
+            *self.plays.lock().expect("plays") += 1;
+            Ok(())
+        }
+
+        fn stop(&self) -> Result<()> {
+            *self.stops.lock().expect("stops") += 1;
+            Ok(())
+        }
+
+        fn set_active_rooms(&self, room_uuids: &[String]) -> Result<()> {
+            self.rooms.lock().expect("rooms").push(room_uuids.to_vec());
+            Ok(())
+        }
+    }
+
+    fn rooms(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    fn tick(
+        arbitration: &Arbitration,
+        player: &SpyPlayer,
+        metrics: &SharedMetrics,
+        state: &mut SupervisorState,
+    ) -> bool {
+        apply_ownership(
+            arbitration,
+            player,
+            "http://127.0.0.1:9000/stream",
+            "audio/flac",
+            metrics,
+            state,
+        )
+    }
+
+    #[test]
+    fn the_aggregate_regroups_around_the_rooms_it_still_owns() {
+        let arbiter = Arc::new(Arbiter::new());
+        let all = Arbitration::new(
+            Arc::clone(&arbiter),
+            SessionId(1),
+            rooms(&["kitchen", "bedroom"]),
+        );
+        let player = SpyPlayer::default();
+        let metrics = SharedMetrics::default();
+        let mut state = SupervisorState::new();
+
+        all.claim();
+        assert!(tick(&all, &player, &metrics, &mut state));
+        assert_eq!(
+            *player.rooms.lock().expect("rooms"),
+            vec![rooms(&["kitchen", "bedroom"])],
+            "the party must first form around every room"
+        );
+
+        // The bedroom's own endpoint starts playing: most recent wins.
+        arbiter.claim(SessionId(2), &rooms(&["bedroom"]));
+        assert!(tick(&all, &player, &metrics, &mut state));
+        assert_eq!(
+            player.rooms.lock().expect("rooms").last(),
+            Some(&rooms(&["kitchen"])),
+            "the party must shrink to what it still owns"
+        );
+        assert_eq!(
+            *player.stops.lock().expect("stops"),
+            0,
+            "the party kept playing, so it must not have been stopped"
+        );
+
+        // The bedroom goes quiet; the party takes it back rather than leaving
+        // the room silent.
+        arbiter.release_all(SessionId(2));
+        assert!(tick(&all, &player, &metrics, &mut state));
+        assert_eq!(
+            player.rooms.lock().expect("rooms").last(),
+            Some(&rooms(&["kitchen", "bedroom"])),
+        );
+    }
+
+    #[test]
+    fn an_unchanged_membership_costs_no_regroup() {
+        let arbiter = Arc::new(Arbiter::new());
+        let all = Arbitration::new(Arc::clone(&arbiter), SessionId(1), rooms(&["kitchen"]));
+        let player = SpyPlayer::default();
+        let metrics = SharedMetrics::default();
+        let mut state = SupervisorState::new();
+
+        all.claim();
+        for _ in 0..5 {
+            assert!(tick(&all, &player, &metrics, &mut state));
+        }
+        assert_eq!(
+            player.rooms.lock().expect("rooms").len(),
+            1,
+            "regrouping every 50 ms tick would hammer the household with UPnP calls"
+        );
+    }
+
+    #[test]
+    fn losing_every_room_stands_the_session_down_exactly_once() {
+        let arbiter = Arc::new(Arbiter::new());
+        let one = Arbitration::new(Arc::clone(&arbiter), SessionId(1), rooms(&["kitchen"]));
+        let player = SpyPlayer::default();
+        let metrics = SharedMetrics::default();
+        let mut state = SupervisorState::new();
+
+        one.claim();
+        assert!(tick(&one, &player, &metrics, &mut state));
+
+        arbiter.claim(SessionId(2), &rooms(&["kitchen"]));
+        for _ in 0..5 {
+            assert!(
+                !tick(&one, &player, &metrics, &mut state),
+                "a session owning nothing has nothing to supervise"
+            );
+        }
+        assert_eq!(
+            *player.stops.lock().expect("stops"),
+            1,
+            "standing down repeatedly would spam the player with stop calls"
+        );
+    }
+
+    #[test]
+    fn a_returning_room_resumes_playback() {
+        let arbiter = Arc::new(Arbiter::new());
+        let one = Arbitration::new(Arc::clone(&arbiter), SessionId(1), rooms(&["kitchen"]));
+        let player = SpyPlayer::default();
+        let metrics = SharedMetrics::default();
+        let mut state = SupervisorState::new();
+
+        one.claim();
+        assert!(tick(&one, &player, &metrics, &mut state));
+
+        arbiter.claim(SessionId(2), &rooms(&["kitchen"]));
+        assert!(!tick(&one, &player, &metrics, &mut state));
+
+        arbiter.release_all(SessionId(2));
+        assert!(tick(&one, &player, &metrics, &mut state));
+        assert_eq!(
+            *player.plays.lock().expect("plays"),
+            1,
+            "the session must start playing again, not just re-own the room"
+        );
+        assert_eq!(metrics.snapshot().reconnects, 1);
     }
 }

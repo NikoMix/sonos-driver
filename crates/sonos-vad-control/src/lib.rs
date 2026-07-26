@@ -1,55 +1,37 @@
-//! User-mode control plane for the optional Sonos virtual-audio driver.
+//! Stable Sonos room identity and Windows device-name derivation.
 //!
-//! This crate is the **user-mode half** of the kernel virtual-audio driver
-//! explored in ADR-0017 (`docs/adr/0017-kernel-virtual-audio-driver.md`). It is
-//! deliberately free of any kernel, FFI, or Windows-specific code, so it builds
-//! and unit-tests on any platform and preserves the workspace's
-//! `#![forbid(unsafe_code)]` guarantee. The kernel driver itself is an
-//! out-of-tree, owner-built C/C++ component; this crate models everything the
-//! Rust service needs to drive it.
+//! This crate is the pure, platform-independent half of the Sonos virtual-audio
+//! driver's user-mode control plane. It has no kernel, FFI, or OS-specific code,
+//! so it builds and unit-tests on any platform and keeps the workspace's
+//! `#![forbid(unsafe_code)]` guarantee.
 //!
-//! It provides three things:
+//! It answers one question: *what should the Windows audio endpoint for this
+//! Sonos room be called?* — see [`RoomKey`] and [`device_name_for`].
 //!
-//! - [`RoomKey`] and [`device_name_for`] — stable room identity and a
-//!   deterministic, de-duplicated Windows device-name derivation.
-//! - [`ControlCommand`] and [`DriverEvent`] — the message contract between the
-//!   user-mode service and the kernel driver (both `serde`-serialisable so the
-//!   eventual IOCTL / named-pipe wire format is not re-invented).
-//! - [`EndpointRegistry`] — the reconcile planner that converges the set of live
-//!   render endpoints to the set of currently discovered rooms, and folds the
-//!   driver's asynchronous replies back into its state.
+//! # Why this is all that is left here
 //!
-//! # Control loop
+//! ADR-0017 originally had the kernel driver **create and destroy** render
+//! endpoints on demand, driven by a serialisable command/event protocol and a
+//! reconcile planner that lived in this crate. ADR-0018 replaced that with a
+//! **fixed** pool of endpoints declared in the driver INF, which user mode
+//! simply *renames*: dynamic `PcRegisterSubdevice` churn was the single riskiest
+//! thing in the design, and renaming is exactly what the Sound control panel
+//! already does.
 //!
-//! Each discovery tick the service calls [`EndpointRegistry::reconcile`] with the
-//! rooms currently discovered (e.g. by `sonos-control`), sends the returned
-//! commands to the driver, and feeds every [`DriverEvent`] reply through
-//! [`EndpointRegistry::apply`]. The whole loop is deterministic and testable
-//! without a driver.
+//! The command/event protocol and the create/destroy registry were therefore
+//! deleted rather than left to rot. Slot planning now lives in
+//! [`sonos-vad-endpoint`](https://docs.rs/sonos-vad-endpoint), next to the
+//! Windows APIs that apply it.
 //!
 //! ```
-//! use sonos_vad_control::{ControlCommand, DriverEvent, EndpointId, EndpointRegistry, RoomKey};
+//! use std::collections::BTreeSet;
+//! use sonos_vad_control::{device_name_for, RoomKey};
 //!
-//! let mut registry = EndpointRegistry::new();
-//!
-//! // A room is discovered -> plan a create.
-//! let rooms = vec![RoomKey::new("RINCON_1", "Living Room")];
-//! let commands = registry.reconcile(&rooms);
-//! assert_eq!(commands.len(), 1);
-//!
-//! // The driver confirms the endpoint -> it becomes active.
-//! registry.apply(&DriverEvent::EndpointCreated { room_uuid: "RINCON_1".into(), id: EndpointId(1) });
-//! assert_eq!(registry.active_endpoint("RINCON_1"), Some(EndpointId(1)));
-//!
-//! // Re-running with the same rooms is idempotent.
-//! assert!(registry.reconcile(&rooms).is_empty());
+//! let living_room = RoomKey::new("RINCON_1", "Living Room");
+//! assert_eq!(device_name_for(&living_room, &BTreeSet::new()), "Sonos Living Room");
 //! ```
 #![forbid(unsafe_code)]
 
-mod protocol;
-mod registry;
 mod room;
 
-pub use protocol::{ControlCommand, DriverEvent, EndpointId};
-pub use registry::{EndpointPhase, EndpointRegistry, EndpointStatus};
 pub use room::{device_name_for, RoomKey, DEVICE_NAME_PREFIX};

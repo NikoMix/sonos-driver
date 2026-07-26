@@ -1,0 +1,37 @@
+/*++
+
+Copyright (c) Microsoft Corporation. All rights reserved.
+Copyright (c) NikoMix and the sonos-driver contributors.
+
+Licensed under the Microsoft Public License (MS-PL).
+See driver/sonosvad/LICENSE-MS-PL.txt for the full licence text.
+
+Derived from the Windows-driver-samples "simpleaudiosample" sample.
+
+Module Name:
+
+    sonosvad.rc
+
+--*/
+
+#include <windows.h>
+
+#include <ntverp.h>
+
+#define VER_FILETYPE                VFT_DRV
+#define VER_FILESUBTYPE             VFT2_DRV_SOUND
+#define VER_FILEDESCRIPTION_STR     "Sonos Virtual Audio Device Driver"
+#define VER_INTERNALNAME_STR        "sonosvad.sys"
+#define VER_ORIGINALFILENAME_STR    "sonosvad.sys"
+
+#undef VER_COMPANYNAME_STR
+#define VER_COMPANYNAME_STR         "sonos-driver project"
+#undef VER_PRODUCTNAME_STR
+#define VER_PRODUCTNAME_STR         "Sonos Virtual Audio Device"
+
+#undef VER_LEGALCOPYRIGHT_YEARS
+#define VER_LEGALCOPYRIGHT_YEARS    "2024-2026"
+#undef VER_LEGALCOPYRIGHT_STR
+#define VER_LEGALCOPYRIGHT_STR      "Copyright (c) Microsoft Corp. and NikoMix " VER_LEGALCOPYRIGHT_YEARS ". Licensed under MS-PL."
+
+#include "common.ver"

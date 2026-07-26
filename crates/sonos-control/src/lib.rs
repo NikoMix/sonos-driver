@@ -19,17 +19,19 @@
 //!
 //! ```no_run
 //! use std::time::Duration;
-//! use sonos_control::{controller_for_room, discover};
+//! use sonos_control::{controller_for_room, discover_household};
 //!
 //! # fn main() -> audio_core::Result<()> {
-//! // Enumerate rooms on the LAN.
-//! let devices = discover(Duration::from_secs(2))?;
+//! // Enumerate rooms. `None` uses SSDP multicast; `Some(host)` asks a known
+//! // player directly, for networks where multicast does not work.
+//! let seed = None;
+//! let devices = discover_household(seed, Duration::from_secs(2))?;
 //! for device in &devices {
 //!     println!("{} — {}", device.room_name, device.model_name);
 //! }
 //!
 //! // Drive a room (resolved to its group coordinator) to pull our stream.
-//! let controller = controller_for_room(Duration::from_secs(2), "Living Room")?;
+//! let controller = controller_for_room(seed, Duration::from_secs(2), "Living Room")?;
 //! controller.set_volume(25)?;
 //! controller.set_stream_uri("http://192.168.1.10:8080/stream", "audio/L16")?;
 //! controller.play()?;
@@ -172,37 +174,143 @@ pub fn discover_zone_groups(timeout: Duration) -> Result<Vec<ZoneGroup>> {
         .first()
         .ok_or_else(|| Error::control("no Sonos players responded to SSDP discovery"))?;
     let url = http::parse_http_url(&first.location)?;
-    let topology_url = format!(
-        "http://{}:{SONOS_CONTROL_PORT}/ZoneGroupTopology/Control",
-        url.host
-    );
-    topology::fetch_zone_groups(&topology_url, timeout)
+    topology::fetch_zone_groups(&zone_group_topology_url(&url.host), timeout)
+}
+
+/// The `ZoneGroupTopology` control URL of the player at `host`.
+fn zone_group_topology_url(host: &str) -> String {
+    format!("http://{host}:{SONOS_CONTROL_PORT}/ZoneGroupTopology/Control")
+}
+
+/// Fetch the zone-group topology from one **known** player instead of
+/// discovering a responder by SSDP.
+///
+/// SSDP needs multicast, which is routinely unavailable: NAT'd hypervisor
+/// networks (Windows Sandbox, WSL, Docker), VLAN-segmented or guest wifi, and
+/// APs with IGMP snooping misconfigured all drop it. Every Sonos player knows
+/// the whole household's topology and answers plain unicast HTTP on
+/// [`SONOS_CONTROL_PORT`], so one reachable address is enough to enumerate
+/// everything.
+///
+/// `seed` may be a bare host/IP (`192.168.1.40`) or include a port.
+///
+/// # Errors
+///
+/// Returns a transport error if `seed` is unreachable, or [`Error::Control`] if
+/// its reply cannot be parsed.
+pub fn zone_groups_from_seed(seed: &str, timeout: Duration) -> Result<Vec<ZoneGroup>> {
+    topology::fetch_zone_groups(&zone_group_topology_url(&normalise_seed(seed)), timeout)
+}
+
+/// Enumerate every player in the household reachable from a known `seed`.
+///
+/// The unicast counterpart of [`discover`]: the topology names every member and
+/// carries its `Location` URL, so each device description is fetched directly.
+/// Members whose description cannot be fetched fall back to the identity the
+/// topology already provided, so a single unreachable player never hides the
+/// rest.
+///
+/// # Errors
+///
+/// Returns an [`Error`] only when the seed itself cannot be queried.
+pub fn discover_from_seed(seed: &str, timeout: Duration) -> Result<Vec<SonosDevice>> {
+    let groups = zone_groups_from_seed(seed, timeout)?;
+
+    let mut devices = Vec::new();
+    let mut known_uuids = HashSet::new();
+    for member in groups.iter().flat_map(|group| &group.members) {
+        if !known_uuids.insert(member.uuid.clone()) {
+            continue;
+        }
+        match fetch_device(&member.location, DEVICE_FETCH_TIMEOUT) {
+            Ok(device) => devices.push(device),
+            Err(err) => {
+                tracing::warn!(
+                    location = %member.location,
+                    %err,
+                    "using the topology's identity for an unreachable player"
+                );
+                let Some(ip) = member.ip() else { continue };
+                devices.push(SonosDevice {
+                    uuid: member.uuid.clone(),
+                    room_name: member.zone_name.clone(),
+                    model_name: String::new(),
+                    ip,
+                });
+            }
+        }
+    }
+    Ok(devices)
+}
+
+/// Strip a `host:port` seed down to the host, and tolerate a pasted URL.
+///
+/// Users copy the address out of the Sonos app or a browser, so
+/// `http://192.168.1.40:1400/xml/device_description.xml` has to work as well as
+/// `192.168.1.40`.
+fn normalise_seed(seed: &str) -> String {
+    let trimmed = seed.trim();
+    let without_scheme = trimmed
+        .strip_prefix("http://")
+        .or_else(|| trimmed.strip_prefix("https://"))
+        .unwrap_or(trimmed);
+    let authority = without_scheme.split('/').next().unwrap_or(without_scheme);
+    // Only strip a *port*; an IPv6 literal has colons of its own.
+    match authority.rsplit_once(':') {
+        Some((host, port)) if !host.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => {
+            host.to_owned()
+        }
+        _ => authority.to_owned(),
+    }
+}
+
+/// Enumerate the household by whichever route is available.
+///
+/// The single entry point callers should use: `seed` selects unicast
+/// [`discover_from_seed`], `None` selects multicast [`discover`].
+///
+/// # Errors
+///
+/// Propagates the error of whichever route was taken.
+pub fn discover_household(seed: Option<&str>, timeout: Duration) -> Result<Vec<SonosDevice>> {
+    match seed.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(seed) => discover_from_seed(seed, timeout),
+        None => discover(timeout),
+    }
+}
+
+/// The zone-group topology, by whichever route is available.
+///
+/// # Errors
+///
+/// Propagates the error of whichever route was taken.
+pub fn household_zone_groups(seed: Option<&str>, timeout: Duration) -> Result<Vec<ZoneGroup>> {
+    match seed.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(seed) => zone_groups_from_seed(seed, timeout),
+        None => discover_zone_groups(timeout),
+    }
 }
 
 /// Build a [`SonosController`] for `room`, resolved to its group coordinator.
 ///
 /// This is the ergonomic entry point for orchestration: it discovers the
 /// topology, maps `room` to the coordinator that must receive transport
-/// commands, and binds a controller to it.
+/// commands, and binds a controller to it. `seed` selects the discovery route
+/// exactly as [`household_zone_groups`] does.
 ///
 /// # Errors
 ///
 /// Returns [`Error::Control`] if discovery finds no matching room or the
 /// coordinator has no usable address.
-pub fn controller_for_room(timeout: Duration, room: &str) -> Result<SonosController> {
-    let groups = discover_zone_groups(timeout)?;
+pub fn controller_for_room(
+    seed: Option<&str>,
+    timeout: Duration,
+    room: &str,
+) -> Result<SonosController> {
+    let groups = household_zone_groups(seed, timeout)?;
     let coordinator = find_room_coordinator(&groups, room)
         .ok_or_else(|| Error::control(format!("no Sonos room named '{room}' was found")))?;
-    let ip = coordinator
-        .ip()
-        .ok_or_else(|| Error::control("group coordinator has no usable IPv4 address"))?;
-    let device = fetch_device(&coordinator.location, timeout).unwrap_or_else(|_| SonosDevice {
-        uuid: coordinator.uuid.clone(),
-        room_name: coordinator.zone_name.clone(),
-        model_name: "Sonos".to_owned(),
-        ip,
-    });
-    Ok(SonosController::new(device))
+    controller_for_member(coordinator, timeout)
 }
 
 /// Build a [`SonosController`] for the device `uuid`, resolved to its group
@@ -217,16 +325,44 @@ pub fn controller_for_room(timeout: Duration, room: &str) -> Result<SonosControl
 ///
 /// Returns [`Error::Control`] if discovery finds no device with that UUID or the
 /// coordinator has no usable address.
-pub fn controller_for_uuid(timeout: Duration, uuid: &str) -> Result<SonosController> {
-    let groups = discover_zone_groups(timeout)?;
-    let coordinator = find_uuid_coordinator(&groups, uuid)
-        .ok_or_else(|| Error::control(format!("no Sonos device with uuid '{uuid}' was found")))?;
-    let ip = coordinator
-        .ip()
-        .ok_or_else(|| Error::control("group coordinator has no usable IPv4 address"))?;
-    let device = fetch_device(&coordinator.location, timeout).unwrap_or_else(|_| SonosDevice {
-        uuid: coordinator.uuid.clone(),
-        room_name: coordinator.zone_name.clone(),
+pub fn controller_for_uuid(
+    seed: Option<&str>,
+    timeout: Duration,
+    uuid: &str,
+) -> Result<SonosController> {
+    let groups = household_zone_groups(seed, timeout)?;
+    if let Some(coordinator) = find_uuid_coordinator(&groups, uuid) {
+        return controller_for_member(coordinator, timeout);
+    }
+
+    // An ungrouped player that the topology missed can still be addressed
+    // directly, so fall back to a plain device lookup before giving up.
+    discover_household(seed, timeout)?
+        .into_iter()
+        .find(|device| device.uuid.eq_ignore_ascii_case(uuid))
+        .map(SonosController::new)
+        .ok_or_else(|| Error::control(format!("no Sonos device with uuid '{uuid}' was found")))
+}
+
+/// Build a controller for a topology member, preferring its full device
+/// description and falling back to the identity the topology already carries.
+///
+/// # Errors
+///
+/// Returns [`Error::Control`] if the member has no usable IPv4 address.
+pub fn controller_for_member(
+    member: &ZoneGroupMember,
+    timeout: Duration,
+) -> Result<SonosController> {
+    let ip = member.ip().ok_or_else(|| {
+        Error::control(format!(
+            "group coordinator '{}' has no usable IPv4 address",
+            member.uuid
+        ))
+    })?;
+    let device = fetch_device(&member.location, timeout).unwrap_or_else(|_| SonosDevice {
+        uuid: member.uuid.clone(),
+        room_name: member.zone_name.clone(),
         model_name: "Sonos".to_owned(),
         ip,
     });
@@ -373,11 +509,134 @@ impl SonosController {
         )?;
         Ok(())
     }
+
+    /// Make this player a member of the group coordinated by
+    /// `coordinator_uuid`, so it renders that coordinator's stream in sync.
+    ///
+    /// This is the mechanism behind the Sonos app's grouping: a member's
+    /// transport URI is set to the pseudo-scheme `x-rincon:<coordinator uuid>`,
+    /// after which the coordinator's clock drives it. Streaming the same HTTP
+    /// URL to each player separately would *look* equivalent and sound wrong —
+    /// every player buffers independently, so they drift audibly apart.
+    ///
+    /// Calling this on the coordinator itself is a no-op that Sonos rejects, so
+    /// callers must skip it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Control`] on a SOAP fault and [`Error::Io`] on a
+    /// transport failure.
+    pub fn join_group(&self, coordinator_uuid: &str) -> Result<()> {
+        let uri = group_uri(coordinator_uuid)?;
+        soap::call(
+            &self.av_transport_url,
+            soap::AV_TRANSPORT_SERVICE,
+            "SetAVTransportURI",
+            &[
+                ("InstanceID", "0"),
+                ("CurrentURI", &uri),
+                // Deliberately empty: a group member has no content of its own.
+                ("CurrentURIMetaData", ""),
+            ],
+            self.timeout,
+        )?;
+        Ok(())
+    }
+
+    /// Remove this player from whatever group it is in, leaving it a standalone
+    /// coordinator again.
+    ///
+    /// Safe to call on a player that is already standalone.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Control`] on a SOAP fault and [`Error::Io`] on a
+    /// transport failure.
+    pub fn leave_group(&self) -> Result<()> {
+        soap::call(
+            &self.av_transport_url,
+            soap::AV_TRANSPORT_SERVICE,
+            "BecomeCoordinatorOfStandaloneGroup",
+            &[("InstanceID", "0")],
+            self.timeout,
+        )?;
+        Ok(())
+    }
+}
+
+/// The `x-rincon:` transport URI that makes a player follow `coordinator_uuid`.
+///
+/// The UUID is validated rather than trusted: it is interpolated into a URI
+/// that Sonos parses, and a stray value from a malformed topology response
+/// would otherwise produce a confusing player-side fault instead of a clear
+/// error here.
+fn group_uri(coordinator_uuid: &str) -> Result<String> {
+    let uuid = coordinator_uuid.trim();
+    if uuid.is_empty()
+        || !uuid
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return Err(Error::control(format!(
+            "not a usable Sonos coordinator uuid: {coordinator_uuid:?}"
+        )));
+    }
+    Ok(format!("x-rincon:{uuid}"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn group_uris_use_the_rincon_pseudo_scheme() {
+        assert_eq!(
+            group_uri("RINCON_949F3EC13FA801400").expect("valid uuid"),
+            "x-rincon:RINCON_949F3EC13FA801400"
+        );
+        // Topology responses are whitespace-formatted XML.
+        assert_eq!(
+            group_uri("  RINCON_ABC  ").expect("valid uuid"),
+            "x-rincon:RINCON_ABC"
+        );
+    }
+
+    #[test]
+    fn group_uris_reject_values_that_would_corrupt_the_uri() {
+        for bad in ["", "   ", "RINCON_A/B", "RINCON_A B", "x-rincon:RINCON_A"] {
+            assert!(group_uri(bad).is_err(), "should have rejected {bad:?}");
+        }
+    }
+
+    #[test]
+    fn seeds_are_normalised_to_a_bare_host() {
+        // Whatever the user pastes has to resolve to the same control URL.
+        for seed in [
+            "192.168.1.40",
+            " 192.168.1.40 ",
+            "192.168.1.40:1400",
+            "http://192.168.1.40:1400",
+            "http://192.168.1.40:1400/xml/device_description.xml",
+            "https://192.168.1.40/",
+        ] {
+            assert_eq!(normalise_seed(seed), "192.168.1.40", "seed: {seed:?}");
+        }
+    }
+
+    #[test]
+    fn seed_normalisation_keeps_hostnames_and_ipv6_literals_intact() {
+        assert_eq!(normalise_seed("sonos-kitchen.local"), "sonos-kitchen.local");
+        // Trailing group of an IPv6 literal is not a port number.
+        assert_eq!(normalise_seed("[fe80::1]"), "[fe80::1]");
+    }
+
+    #[test]
+    fn zone_group_topology_url_targets_the_control_port() {
+        assert_eq!(
+            zone_group_topology_url("192.168.1.40"),
+            "http://192.168.1.40:1400/ZoneGroupTopology/Control"
+        );
+    }
 
     fn sample_device() -> SonosDevice {
         SonosDevice {

@@ -29,3 +29,11 @@ desktop.ini
 *.profraw
 /coverage
 lcov.info
+
+# Kernel driver build output (MSBuild/WDK)
+/driver/sonosvad/build/
+/driver/sonosvad/artifacts/
+/driver/sonosvad/x64/
+/driver/sonosvad/ARM64/
+/driver/sonosvad/**/*.user
+/driver/_local/

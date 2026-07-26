@@ -2,18 +2,22 @@
 //!
 //! The full control surface for the Windows -> Sonos audio bridge: discover
 //! players (`list`), stream system audio to a room (`stream`, Ctrl-C to stop),
-//! halt playback (`stop`), inspect latency profiles (`profiles`), and manage
+//! stream to several rooms at once with no driver installed (`cast`), halt
+//! playback (`stop`), inspect latency profiles (`profiles`), and manage
 //! configuration (`config example` / `config check`). Configuration precedence
 //! is strict: command-line flags override file values, which override defaults.
 //!
-//! Parsing and per-command logic live in [`cli`], [`config`] and [`commands`];
-//! this module only wires argument parsing, logging, dispatch and exit codes.
+//! Parsing and per-command logic live in [`cli`], [`config`], [`commands`] and
+//! [`cast`]; this module only wires argument parsing, logging, dispatch and
+//! exit codes.
 
 #![forbid(unsafe_code)]
 
+mod cast;
 mod cli;
 mod commands;
 mod config;
+mod vad;
 
 use std::process::ExitCode;
 
@@ -23,10 +27,13 @@ use sonos_driver_core::core::Error as CoreError;
 use crate::cli::{Cli, Command};
 
 /// Crate targets whose `tracing` events the default log filter surfaces.
-const TRACING_CRATES: [&str; 8] = [
+const TRACING_CRATES: [&str; 11] = [
     "sonos_driver_cli",
     "sonos_driver_core",
+    "sonos_cast_service",
+    "sonos_routing",
     "sonos_control",
+    "sonos_vad_endpoint",
     "audio_capture",
     "audio_codec",
     "audio_pipeline",
@@ -53,6 +60,8 @@ fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Command::List(args) => commands::run_list(args),
         Command::Stream(args) => commands::run_stream(cli.config.as_deref(), args),
         Command::Stop(args) => commands::run_stop(args),
+        Command::Cast(args) => cast::run_cast(args),
+        Command::Vad(action) => vad::run_vad(action, cli.config.as_deref()),
         Command::Config(action) => commands::run_config(action, cli.config.as_deref()),
     }
 }

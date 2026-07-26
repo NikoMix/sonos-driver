@@ -16,8 +16,7 @@ use sonos_control::{controller_for_room, controller_for_uuid, SonosController};
 /// which would make an SSDP search return before any player could answer; three
 /// seconds is the shortest interval that reliably collects responses on a
 /// typical LAN.
-const MIN_DISCOVERY: Duration = Duration::from_secs(3);
-
+pub(crate) const MIN_DISCOVERY: Duration = Duration::from_secs(3);
 /// The subset of Sonos AVTransport control the bridge drives.
 ///
 /// Implemented for [`sonos_control::SonosController`] in production and by an
@@ -46,6 +45,49 @@ pub trait PlayerControl: Send {
     /// Returns an [`Error`] if the underlying control call fails.
     fn stop(&self) -> Result<()>;
 
+    /// Make this player render `coordinator_uuid`'s stream in sync with it.
+    ///
+    /// Only meaningful for real Sonos players; the default rejects the call so
+    /// a player that cannot be grouped fails loudly instead of silently
+    /// dropping out of a group it was supposed to have joined.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] if the player cannot be grouped or the call fails.
+    fn join_group(&self, coordinator_uuid: &str) -> Result<()> {
+        Err(Error::config(format!(
+            "this player cannot join a Sonos group (coordinator {coordinator_uuid})"
+        )))
+    }
+
+    /// Return this player to being its own standalone coordinator.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] if the player cannot be ungrouped or the call
+    /// fails.
+    fn leave_group(&self) -> Result<()> {
+        Err(Error::config("this player cannot leave a Sonos group"))
+    }
+
+    /// Restrict this player to the listed Sonos rooms, identified by UUID.
+    ///
+    /// Called on every supervise tick with the rooms the arbiter says this
+    /// session still owns, so the call must be **idempotent and cheap when
+    /// nothing changed** — it runs several times a second.
+    ///
+    /// The default is a no-op: a single-room player owns exactly one room, and
+    /// losing it is expressed by stopping the session outright. Only the
+    /// aggregate "All Sonos" player ([`crate::GroupPlayer`]) implements this,
+    /// where it adds and removes members of the party group.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] if regrouping fails.
+    fn set_active_rooms(&self, _room_uuids: &[String]) -> Result<()> {
+        Ok(())
+    }
+
     /// The player's own LAN IP address, when known.
     ///
     /// The session uses this to advertise a stream URL on the local interface
@@ -73,6 +115,14 @@ impl PlayerControl for SonosController {
         SonosController::stop(self)
     }
 
+    fn join_group(&self, coordinator_uuid: &str) -> Result<()> {
+        SonosController::join_group(self, coordinator_uuid)
+    }
+
+    fn leave_group(&self) -> Result<()> {
+        SonosController::leave_group(self)
+    }
+
     fn peer_ip(&self) -> Option<IpAddr> {
         Some(IpAddr::V4(self.device().ip))
     }
@@ -91,6 +141,11 @@ impl PlayerControl for SonosController {
 /// [`Error::Control`] when discovery finds no matching device.
 pub(crate) fn resolve_target(config: &SonosConfig) -> Result<SonosController> {
     let timeout = Duration::from_secs(u64::from(config.discovery_timeout_secs)).max(MIN_DISCOVERY);
+    let seed = config
+        .seed_host
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
 
     if let Some(uuid) = config
         .uuid
@@ -101,7 +156,7 @@ pub(crate) fn resolve_target(config: &SonosConfig) -> Result<SonosController> {
         // A UUID may identify a non-coordinator member (e.g. one speaker of a
         // stereo pair); resolve it to the group coordinator that accepts
         // transport commands.
-        return controller_for_uuid(timeout, uuid);
+        return controller_for_uuid(seed, timeout, uuid);
     }
 
     if let Some(room) = config
@@ -110,7 +165,7 @@ pub(crate) fn resolve_target(config: &SonosConfig) -> Result<SonosController> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        return controller_for_room(timeout, room);
+        return controller_for_room(seed, timeout, room);
     }
 
     Err(Error::config(
@@ -137,6 +192,7 @@ mod tests {
         let config = SonosConfig {
             room: Some("   ".to_owned()),
             uuid: Some(String::new()),
+            seed_host: None,
             discovery_timeout_secs: 0,
         };
         assert!(matches!(resolve_target(&config), Err(Error::Config(_))));

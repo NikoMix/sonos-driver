@@ -1,7 +1,22 @@
 # 0017 — Kernel virtual-audio driver: a scoped, personal-use revisit of ADR-0014
 
-- Status: Accepted
+- Status: **Superseded in part** by [ADR-0018](./0018-loopback-rename-and-service-hosting.md)
 - Date: 2026-06-26
+
+> **Corrections to this record.** ADRs are historical documents and the body
+> below is left as it was written, but two statements in it are wrong and are
+> corrected here:
+>
+> 1. **Licensing.** This ADR repeatedly calls Microsoft's driver samples
+>    *MIT-licensed*. They are licensed under the **Microsoft Public License
+>    (MS-PL)**. See [`driver/DERIVATION.md`](../../driver/DERIVATION.md) for the
+>    obligations that actually apply.
+> 2. **Base sample.** §1 names **Sysvad** as the base. The driver was in fact
+>    derived from **`simpleaudiosample`**, which is the same PortCls/WaveRT
+>    scaffolding without the hardware-codec fiction.
+>
+> §3 (the kernel→user PCM bridge and dynamic subdevice creation) is superseded by
+> ADR-0018: neither was built, and neither is needed.
 
 ## Context
 

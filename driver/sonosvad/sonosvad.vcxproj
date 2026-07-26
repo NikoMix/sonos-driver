@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="12.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!--
+    sonosvad - Sonos Virtual Audio Device (kernel-mode WaveRT/PortCls driver).
+
+    Derived from the Windows-driver-samples "simpleaudiosample" sample (MS-PL).
+    Unlike the sample, all sources are compiled into a single driver project
+    instead of four static libraries plus a driver.
+  -->
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|ARM64">
+      <Configuration>Debug</Configuration>
+      <Platform>ARM64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|ARM64">
+      <Configuration>Release</Configuration>
+      <Platform>ARM64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{0B9E9E1F-2C6D-4A55-9C6C-5C1D0A4B7E11}</ProjectGuid>
+    <RootNamespace>sonosvad</RootNamespace>
+    <KMDF_VERSION_MAJOR>1</KMDF_VERSION_MAJOR>
+    <SupportsPackaging>false</SupportsPackaging>
+    <RequiresPackageProject>true</RequiresPackageProject>
+    <Configuration Condition="'$(Configuration)' == ''">Debug</Configuration>
+    <Platform Condition="'$(Platform)' == ''">x64</Platform>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <TargetVersion>Windows10</TargetVersion>
+    <DriverTargetPlatform>Universal</DriverTargetPlatform>
+    <DriverType>KMDF</DriverType>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <ConfigurationType>Driver</ConfigurationType>
+    <UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
+    <UseDebugLibraries Condition="'$(Configuration)'!='Debug'">false</UseDebugLibraries>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" />
+  </ImportGroup>
+  <PropertyGroup>
+    <!-- See Directory.Build.props: must be applied after Microsoft.Cpp.props. -->
+    <IntDir>$(SonosVadBuildRoot)obj\$(MSBuildProjectName)\$(Platform)\$(Configuration)\</IntDir>
+    <OutDir>$(SonosVadBuildRoot)bin\$(MSBuildProjectName)\$(Platform)\$(Configuration)\</OutDir>
+    <TargetName>sonosvad</TargetName>
+    <!--
+      Enable full static analysis. The driver runs in the kernel on the owner's
+      primary machine, so warnings are errors and the driver-specific
+      code-analysis rule sets are always on.
+    -->
+    <RunCodeAnalysis>true</RunCodeAnalysis>
+    <EnablePREfast>true</EnablePREfast>
+    <CodeAnalysisRuleSet>$(WindowsSdkDir)CodeAnalysis\DriverRecommendedRules.ruleset</CodeAnalysisRuleSet>
+    <SpectreMitigation>Spectre</SpectreMitigation>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(DDK_INC_PATH);$(MSBuildThisFileDirectory)Source\Inc;$(MSBuildThisFileDirectory)Source\Filters;$(MSBuildThisFileDirectory)Source\Utilities;$(MSBuildThisFileDirectory)Source\Main</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);_WIN32;UNICODE;_UNICODE;PC_IMPLEMENTATION;_USE_WAVERT_;_USE_IPortClsRuntimePower;_NEW_DELETE_OPERATORS_</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(Configuration)'=='Debug'">%(PreprocessorDefinitions);DEBUG_LEVEL=DEBUGLVL_VERBOSE</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(Configuration)'!='Debug'">%(PreprocessorDefinitions);DEBUG_LEVEL=DEBUGLVL_TERSE</PreprocessorDefinitions>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <WarningLevel>Level4</WarningLevel>
+    </ClCompile>
+    <ResourceCompile>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(DDK_INC_PATH);$(MSBuildThisFileDirectory)Source\Inc</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);_WIN32;UNICODE;_UNICODE;PC_IMPLEMENTATION</PreprocessorDefinitions>
+    </ResourceCompile>
+    <Link>
+      <AdditionalDependencies>%(AdditionalDependencies);$(DDK_LIB_PATH)\portcls.lib;$(DDK_LIB_PATH)\stdunk.lib;$(DDK_LIB_PATH)\libcntpr.lib</AdditionalDependencies>
+    </Link>
+    <Inf>
+      <TimeStampServer>http://timestamp.digicert.com</TimeStampServer>
+    </Inf>
+    <DriverSign>
+      <FileDigestAlgorithm>sha256</FileDigestAlgorithm>
+    </DriverSign>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="Source\Main\adapter.cpp" />
+    <ClCompile Include="Source\Main\basetopo.cpp" />
+    <ClCompile Include="Source\Main\common.cpp" />
+    <ClCompile Include="Source\Main\mintopo.cpp" />
+    <ClCompile Include="Source\Main\minwavert.cpp" />
+    <ClCompile Include="Source\Main\minwavertstream.cpp" />
+    <ClCompile Include="Source\Main\NewDelete.cpp" />
+    <ClCompile Include="Source\Filters\speakertopo.cpp" />
+    <ClCompile Include="Source\Utilities\hw.cpp" />
+    <ClCompile Include="Source\Utilities\kshelper.cpp" />
+    <ResourceCompile Include="Source\Main\sonosvad.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Source\Inc\basetopo.h" />
+    <ClInclude Include="Source\Inc\common.h" />
+    <ClInclude Include="Source\Inc\definitions.h" />
+    <ClInclude Include="Source\Inc\endpoints.h" />
+    <ClInclude Include="Source\Inc\kshelper.h" />
+    <ClInclude Include="Source\Inc\mintopo.h" />
+    <ClInclude Include="Source\Inc\NewDelete.h" />
+    <ClInclude Include="Source\Filters\minipairs.h" />
+    <ClInclude Include="Source\Filters\speakertopo.h" />
+    <ClInclude Include="Source\Filters\speakertoptable.h" />
+    <ClInclude Include="Source\Filters\speakerwavtable.h" />
+    <ClInclude Include="Source\Main\minwavert.h" />
+    <ClInclude Include="Source\Main\minwavertstream.h" />
+    <ClInclude Include="Source\Utilities\hw.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <Inf Include="Source\Main\sonosvad.inx">
+      <!--
+        The .inx is regenerated on every build, and DriverVer uses a '*'
+        timestamp, so never let tracking skip the stamp.
+      -->
+      <MinimalRebuildFromTracking>false</MinimalRebuildFromTracking>
+      <!--
+        stampinf's default '*' date is the machine's *local* date, but inf2cat
+        compares DriverVer against UTC. East of UTC, every build between
+        midnight and the UTC offset therefore fails with
+        "22.9.7: DriverVer set to a date in the future". Stamping the UTC date
+        explicitly makes the build timezone-proof.
+      -->
+      <DateStamp>$([System.DateTime]::UtcNow.ToString("MM/dd/yyyy"))</DateStamp>
+    </Inf>
+    <FilesToPackage Include="$(TargetPath)" Condition="'$(ConfigurationType)'=='Driver' or '$(ConfigurationType)'=='DynamicLibrary'" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <!--
+    Regenerate the INF from the same endpoint count the C++ uses, so the
+    KSNAME_* strings in the INF can never drift from Filters\minipairs.h.
+  -->
+  <Target Name="SonosVadGenerateInx" BeforeTargets="StampInf">
+    <Exec Command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)tools\Generate-Inx.ps1&quot; -EndpointCount $(SonosVadEndpointCount)" />
+  </Target>
+  <PropertyGroup>
+    <!--
+      8 room slots + 1 reserved for the "All Sonos" aggregate output.
+      Must match SONOSVAD_ENDPOINT_COUNT in Source\Inc\definitions.h.
+    -->
+    <SonosVadEndpointCount Condition="'$(SonosVadEndpointCount)'==''">9</SonosVadEndpointCount>
+  </PropertyGroup>
+</Project>

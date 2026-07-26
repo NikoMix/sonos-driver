@@ -9,6 +9,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Every Sonos room is now a native Windows audio output**, plus an **All
+  Sonos** output that plays to the whole household at once. Pick a room in the
+  Windows sound picker and system audio plays there; there is no GUI, by design.
+  See [ADR-0018](docs/adr/0018-loopback-rename-and-service-hosting.md).
+  - `sonosvad.sys` — a PortCls/WaveRT virtual audio driver (C++, derived from
+    Microsoft's MS-PL `simpleaudiosample`) exposing nine render endpoints: eight
+    rooms and one for the aggregate. It is a null sink that advances its stream
+    position at exactly real time; the audio never crosses the kernel boundary,
+    because WASAPI loopback capture already provides it in user mode.
+  - `sonosvad-svc` — a headless LocalSystem service that discovers the
+    household, renames each endpoint to its room, loopback-captures it, and
+    streams it to that room through the existing FLAC/HTTP/UPnP pipeline.
+  - **All Sonos** forms a real Sonos group rather than streaming to each room in
+    parallel, which drifts audibly. Absorbing whole zone groups keeps bonded
+    satellites and existing user groups intact and makes the party trivially
+    reversible.
+  - **Last-audio-wins arbitration.** When All Sonos and a room's own output both
+    have audio, whichever started most recently gets the speaker; when it falls
+    silent, the other picks the room back up.
+  - **`vad ungroup`** splits any rooms left grouped by a run that was killed
+    mid-party. Grouping lives in the speakers, so the absorbed rooms are
+    journalled to `%ProgramData%`; the service replays it on startup and
+    `Uninstall-Driver.ps1` runs it before removing the driver.
+  - **Idle release.** A silent output stops its player and hands the room back,
+    so the driver never holds speakers hostage from the Sonos app, and reclaims
+    them the moment audio returns.
+  - **Spare endpoints are hidden** from the sound picker, so it shows your rooms
+    rather than a run of "Sonos Output 7" placeholders. `vad release` restores
+    both the names and the visibility.
+  - **Seed-host discovery** (`--seed-host`): any one player reports the whole
+    household over unicast HTTP, which works on networks where SSDP multicast
+    does not (NAT'd VMs, guest wifi, APs without IGMP).
+  - `vad status | bind | release | ungroup | probe | serve` CLI, and
+    `driver/scripts/Test-Driver.ps1` (static validation: InfVerif, ApiValidator,
+    PE/import checks, catalog/signature) plus `Test-DriverOnHost.ps1` for the
+    load-dependent checks a sandbox cannot run.
+
+- **A driverless mode**, for machines where installing a driver is not on the
+  table. It does everything the driver does except put rooms in the sound
+  picker — Windows offers no user-mode way to create an audio endpoint, so that
+  one capability is genuinely kernel-only. See
+  [ADR-0019](docs/adr/0019-driverless-routing-mode.md).
+  - **`sonos-driver cast`** streams to one room, several rooms as a synchronised
+    group, or `--all`, with nothing installed, no reboot and Secure Boot left on.
+  - **Per-application routing** via WASAPI process loopback: send Spotify to the
+    kitchen and everything else to the living room, concurrently. This is not
+    possible through the driver at all, because Windows routes by endpoint — so
+    the two modes are complements, not a fallback.
+  - **`sonos-cast-svc`** — a second headless service (`sonoscast`) running the
+    identical worker from `%ProgramData%\sonos-driver\cast.toml`, written for you
+    on install. Both services can be installed at once.
+  - New `sonos-routing` crate: a hardware-free planner that resolves routes
+    against a discovered household, matching rooms by UUID or case-insensitive
+    name (including non-ASCII), allocating a stream port per route, and rejecting
+    two routes that claim the same room with both route numbers named.
+  - **`cast --dry-run`** resolves and prints the plan — rooms, capture mode,
+    ports and group coordinators — without touching a speaker.
+
 - **Foundation for an optional kernel virtual-audio driver** that would enumerate
   **each Sonos room as its own Windows output device** (personal-use, free
   test-signed; the user-mode bridge remains the default product). This phase lands
@@ -48,6 +106,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ([#42](https://github.com/NikoMix/sonos-driver/issues/42))
 
 ### Fixed
+
+- **The driver install scripts could not complete an install or an uninstall.**
+  Six defects, found by walking the runbook end to end rather than reading it:
+  - `Sign-Driver.ps1` defaulted `-SysPath` to `driver/_local/sonosvad.sys` and
+    `Install-Driver.ps1` defaulted `-InfPath` to `driver/sonosvad.inf`. Neither
+    path is ever written — `Build-Driver.ps1` emits to
+    `driver/sonosvad/artifacts/<Platform>/<Configuration>/`. Both now resolve
+    through a shared `Get-SonosVadArtifactDir` and honour `-Configuration` /
+    `-Platform`.
+  - `Sign-Driver.ps1` signed only `sonosvad.sys`, leaving `sonosvad.cat` on the
+    throwaway `WDKTestCert` the build generates. `pnputil` validates the
+    **catalog** against Trusted Publishers, so every install was rejected with a
+    bare "third-party INF does not contain digital signature information". It now
+    signs both. (Re-signing the `.sys` does not invalidate the catalog: catalog
+    entries store the Authenticode hash, which excludes the certificate table.)
+  - `Sign-Driver.ps1` searched only the user certificate store, while
+    `New-TestCert.ps1` creates the certificate in `LocalMachine\My`, so signing
+    failed with "No certificates were found that met all the given criteria". It
+    now finds the certificate in either store and passes `/sm` when required.
+  - `$PSScriptRoot` is empty inside `param()` defaults when a script is run via
+    `powershell -File` on PS 5.1, so `New-TestCert.ps1` aborted immediately on an
+    empty `-OutDir`, and `Install-Driver.ps1` / `Uninstall-Driver.ps1` could not
+    locate `sonosvad-svc.exe`. All three now resolve in the script body.
+  - `Uninstall-Driver.ps1` dereferenced `.Source` on the `$null` that
+    `Get-Command` returns when `sonos-driver.exe` is not on `PATH`. Under
+    `Set-StrictMode` that threw and **aborted the uninstall before the device
+    node and driver package were removed**, leaving the driver installed and any
+    All Sonos group un-split. The same hazard in `Get-SonosVadDeviceNode` (which
+    both install and uninstall depend on) and on `Test-DriverOnHost.ps1`'s
+    device-failure path is guarded too.
+- **`README.md` told you to start the wrong service.** The service is named
+  `sonosvad`; `sonosvad-svc` is the executable. The quickstart also duplicated
+  the service registration that `Install-Driver.ps1` already performs.
 
 - **Multi-homed room discovery** (`sonos-control`): SSDP `M-SEARCH` discovery now
   sends from every usable local IPv4 interface, explicitly selecting each as the

@@ -24,6 +24,64 @@ pub struct Config {
     pub stream: StreamConfig,
     /// Sonos target / discovery settings.
     pub sonos: SonosConfig,
+    /// When to release the speakers because nothing is playing.
+    pub idle: IdleConfig,
+}
+
+/// When to hand the speakers back because Windows has gone quiet.
+///
+/// A bridge that streams continuously would occupy the room forever: the Sonos
+/// app would show "Windows" as the active source around the clock, and playing
+/// anything from Spotify or the radio would mean manually kicking us off first.
+/// So when the captured audio has been silent for [`IdleConfig::stop_after_secs`]
+/// the transport is stopped, and it is started again the moment sound returns.
+///
+/// The cost of the release is one extra buffer fill (~1 s) before the first
+/// sound after a quiet spell is audible.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct IdleConfig {
+    /// Stop the room after this many seconds of continuous silence. `0`
+    /// disables idle release, keeping the room occupied for as long as the
+    /// bridge runs.
+    pub stop_after_secs: u32,
+    /// Peak level below which a block counts as silent, in dBFS.
+    ///
+    /// Not "exactly zero": WASAPI loopback of an idle-but-open endpoint, and
+    /// dithered digital silence, both produce samples that are inaudible
+    /// without being `0.0`. -120 dBFS is two bits below the noise floor of
+    /// 16-bit audio, so nothing audible can hide under it.
+    pub silence_dbfs: i32,
+}
+
+impl Default for IdleConfig {
+    fn default() -> Self {
+        Self {
+            stop_after_secs: 30,
+            silence_dbfs: -120,
+        }
+    }
+}
+
+impl IdleConfig {
+    /// The silence window, or `None` when idle release is disabled.
+    #[must_use]
+    pub fn stop_after(&self) -> Option<std::time::Duration> {
+        (self.stop_after_secs > 0)
+            .then(|| std::time::Duration::from_secs(u64::from(self.stop_after_secs)))
+    }
+
+    /// [`IdleConfig::silence_dbfs`] as a peak sample magnitude in `[0.0, 1.0]`.
+    #[must_use]
+    pub fn silence_threshold(&self) -> f32 {
+        // Clamped so a nonsensical config cannot make every block "audible"
+        // (positive dBFS) and defeat idle release entirely.
+        let dbfs = f64::from(self.silence_dbfs.min(0));
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            10f64.powf(dbfs / 20.0) as f32
+        }
+    }
 }
 
 /// Which Windows audio endpoint to capture.
@@ -98,6 +156,14 @@ pub struct SonosConfig {
     pub room: Option<String>,
     /// Target device UUID, taking precedence over `room` when set.
     pub uuid: Option<String>,
+    /// Address of a known Sonos player used to enumerate the household over
+    /// plain unicast HTTP instead of SSDP multicast.
+    ///
+    /// SSDP needs multicast, which NAT'd hypervisor networks (Windows Sandbox,
+    /// WSL, Docker), VLAN-segmented or guest wifi, and APs without working IGMP
+    /// all drop. Any single player knows the whole topology, so one reachable
+    /// address is enough. `None` uses SSDP.
+    pub seed_host: Option<String>,
     /// Seconds to wait for SSDP discovery responses.
     pub discovery_timeout_secs: u32,
 }

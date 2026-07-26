@@ -18,11 +18,17 @@
 [CmdletBinding()]
 param(
     [string] $Subject = 'CN=SonosVAD Test',
-    [string] $OutDir  = (Join-Path $PSScriptRoot '..\_local')
+    [string] $OutDir
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+# $PSScriptRoot is empty inside param() defaults under -File on PS 5.1, so it has
+# to be resolved here instead.
+if (-not $OutDir) {
+    $OutDir = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) '..\_local'
+}
 
 Write-Host '== Create test code-signing certificate ==' -ForegroundColor Cyan
 
