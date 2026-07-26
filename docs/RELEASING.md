@@ -45,7 +45,7 @@ Then:
 
 ## 3. Cut the release locally (authoritative today)
 
-`scripts/package.ps1` builds **both** release binaries (the CLI and the tray GUI) and
+`scripts/package.ps1` builds **both** release binaries (the CLI and the Sonos Router app) and
 assembles a portable, self-contained zip (both binaries + README + CHANGELOG + both
 licences + a generated example config). It needs no extra crate or `xtask` (see ADR-0010)
 and only built-in PowerShell cmdlets.
@@ -117,7 +117,7 @@ with the built-in `GITHUB_TOKEN` — to keep the release supply chain minimal. S
 
 ## 5. Code signing (Authenticode) — honest status
 
-The released binaries (`sonos-driver.exe` and `sonos-driver-gui.exe`) are **normal
+The released binaries (`sonos-driver.exe` and `sonos-router.exe`) are **normal
 user-mode executables** and are currently shipped **unsigned** — as is the installer.
 Consequences and options:
 
@@ -143,7 +143,7 @@ Before announcing, sanity-check the archive on a clean path:
 Expand-Archive dist\sonos-driver-X.Y.Z-x86_64-pc-windows-msvc.zip -DestinationPath $env:TEMP\sd-verify
 $dir = "$env:TEMP\sd-verify\sonos-driver-X.Y.Z-x86_64-pc-windows-msvc"
 & "$dir\sonos-driver.exe" --version        # CLI prints the version
-Start-Process "$dir\sonos-driver-gui.exe"  # GUI shows its tray icon — then close it
+Start-Process "$dir\sonos-router.exe"  # app opens and shows its tray icon — then close it
 ```
 
 Confirm the CLI version matches the tag and that both binaries, the README, CHANGELOG, both

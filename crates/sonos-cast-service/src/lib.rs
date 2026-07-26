@@ -26,6 +26,8 @@
 #![forbid(unsafe_code)]
 
 pub mod config;
+pub mod observer;
 pub mod worker;
 
+pub use observer::{Observer, RouteReport, WorkerEvent};
 pub use worker::{dry_run, run, WorkerSettings};

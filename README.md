@@ -1,13 +1,15 @@
 # sonos-driver
 
-**Every Sonos room as a native Windows audio output.** Pick "Küche" in the
-Windows sound picker and your PC's audio plays in the kitchen. Pick "All Sonos"
-and it plays everywhere, in sync. There is no app to open and no GUI to
-configure — the Windows sound UI *is* the interface.
+**Your Sonos rooms as Windows audio destinations.** Send this PC's audio to the
+kitchen, or to every room at once in sync, and change your mind while it plays.
 
-Underneath sits a **pure-Rust user-mode bridge** that captures each output
-(WASAPI loopback) and streams it to the matching Sonos room, with selectable
-latency/quality profiles.
+There are three ways to do it, covered below: a small **routing app** that needs
+no install, a **CLI/service** for headless and per-application setups, and a
+**virtual audio driver** that puts each room in the Windows sound picker itself.
+
+Underneath all three sits a **pure-Rust user-mode bridge** that captures a
+Windows output (WASAPI loopback) and streams it to the matching Sonos room, with
+selectable latency/quality profiles.
 
 > [!IMPORTANT]
 > **Latency reality.** Sonos players enforce a non-configurable internal buffer
@@ -18,50 +20,68 @@ latency/quality profiles.
 > [docs/LATENCY-BUDGET.md](docs/LATENCY-BUDGET.md).
 
 > [!NOTE]
-> **The virtual audio driver is personal-use and test-signed**, not
-> WHQL-certified, so loading it needs test signing enabled on your machine — see
-> [docs/DRIVER-SETUP.md](docs/DRIVER-SETUP.md). If you would rather install
-> nothing, the **[driverless mode](#driverless-mode-no-install-no-reboot)** does
-> everything except put the rooms in the sound picker.
+> **Start with the app.** [Sonos Router](#sonos-router-the-app) needs no install,
+> no reboot and no administrator rights: launch it, pick a room next to each
+> output, press Start. The **[virtual audio driver](#rooms-as-windows-outputs)**
+> is the only way to get rooms into the Windows sound picker itself, but it is
+> personal-use and test-signed rather than WHQL-certified, so loading it needs
+> test signing enabled — see [docs/DRIVER-SETUP.md](docs/DRIVER-SETUP.md).
 
-## Two ways to run it
+## Three ways to run it
 
-|  | **Driver mode** | **Driverless mode** |
-| --- | --- | --- |
-| Rooms in the Windows sound picker | ✅ | ❌ |
-| Per-app routing (Spotify → Küche, rest → Wohnzimmer) | ❌ | ✅ |
-| Several rooms as one synced group | ✅ | ✅ |
-| Needs an install + reboot | ✅ | ❌ |
-| Works with Secure Boot on | ❌ (until [attestation-signed](docs/adr/0019-driverless-routing-mode.md)) | ✅ |
-| Route chosen by | the Windows sound UI | `cast.toml` or CLI flags |
+|  | **Sonos Router** (app) | **Driverless CLI** | **Driver mode** |
+| --- | --- | --- | --- |
+| Rooms in the Windows sound picker | ❌ | ❌ | ✅ |
+| Change routing while it plays | ✅ | ❌ (edit + restart) | ✅ (sound picker) |
+| Per-app routing (Spotify → Küche) | ❌ | ✅ | ❌ |
+| Several rooms as one synced group | ✅ | ✅ | ✅ |
+| Needs an install + reboot | ❌ | ❌ | ✅ |
+| Needs administrator rights | ❌ | ❌ | ✅ |
+| Works with Secure Boot on | ✅ | ✅ | ❌ (until [attestation-signed](docs/adr/0019-driverless-routing-mode.md)) |
+| Runs without a logged-in session | ❌ (use `sonoscast`) | ✅ (as a service) | ✅ |
+| Route chosen by | the app's table | `cast.toml` or CLI flags | the Windows sound UI |
 
-Neither is a fallback for the other — they route by different things. Windows
-routes audio *by endpoint*, so only the driver can offer a room in the picker,
-and only the driverless mode can split by application. Both drive the same
-streaming pipeline, and both can be installed at once. The reasoning, including
-why no user-mode API can create an audio endpoint, is in
-[ADR-0019](docs/adr/0019-driverless-routing-mode.md).
+The app and the CLI are the **same driverless engine** with different front
+ends, and they share one config file — configure it in the app, then let the
+`sonoscast` service run the very same routes headless at boot if you want them
+always on.
+
+The driver is not a competitor to either: Windows routes audio *by endpoint*, so
+only the driver can put a room in the sound picker, and only the driverless mode
+can split by application. All three drive the same streaming pipeline and all
+can be installed at once. The reasoning, including why no user-mode API can
+create an audio endpoint, is in
+[ADR-0019](docs/adr/0019-driverless-routing-mode.md); the app's design is in
+[ADR-0020](docs/adr/0020-runtime-routing-app.md).
 
 ## Status
 
-**Rooms-as-outputs feature complete; the driver awaits host validation.**
-`sonosvad` builds, signs and passes every static check (InfVerif, ApiValidator,
-PE/import and catalog/signature), and the Rust workspace is green across 376
-tests. Load-dependent verification — installing the driver, Driver Verifier, the
-audio round-trip, and the grouping calls against real speakers — has to run on a
-machine where test signing can be enabled, via
+**Feature complete in all three modes; the driver awaits host validation.**
+
+**Sonos Router** (the app) is complete and validated against a live household —
+output enumeration, discovery, assignment, apply, retry and clean shutdown are
+exercised end to end by `cargo run -p sonos-driver-gui --example smoke`.
+
+The **driverless CLI/service is complete and needs no host validation** —
+nothing to install means nothing that can fail to load. Its planner has been
+exercised against a live household with `sonos-driver cast --dry-run`.
+
+`sonosvad`, the **driver**, builds, signs and passes every static check
+(InfVerif, ApiValidator, PE/import and catalog/signature). Load-dependent
+verification — installing the driver, Driver Verifier, the audio round-trip, and
+the grouping calls against real speakers — has to run on a machine where test
+signing can be enabled, via
 [`driver/scripts/Test-DriverOnHost.ps1`](driver/scripts/Test-DriverOnHost.ps1).
 
-The **driverless mode is complete and needs no host validation** — nothing to
-install means nothing that can fail to load. Its planner has been exercised
-against a live household with `sonos-driver cast --dry-run`.
+The Rust workspace is green across **407 tests** with `clippy -D warnings` clean
+at pedantic level.
 
 The user-mode bridge is unchanged and complete: capture → pipeline → encode →
 serve → control, wired by
-[`Bridge::run()`](crates/sonos-driver-core/src/lib.rs). Drive it from the `clap`
-CLI (`list` / `stream` / `cast` / `stop` / `config` / `vad`), or let one of the
-two headless services run it — `sonosvad-svc` for the driver mode, `sonos-cast-svc`
-for the driverless one.
+[`Bridge::run()`](crates/sonos-driver-core/src/lib.rs). Drive it from the app,
+from the `clap` CLI (`list` / `stream` / `cast` / `stop` / `config` / `vad`), or
+let one of the two headless services run it — `sonosvad-svc` for the driver
+mode, `sonos-cast-svc` for the driverless one.
 
 Everything except the Windows audio hardware path is exercised by automated tests
 (including a hardware-free end-to-end latency harness). WASAPI loopback cannot run in
@@ -72,11 +92,16 @@ CI, so the capture path is verified with a
 
 ## Features
 
+- 🎛️ **Sonos Router** — a small app that lists every Windows output and every
+  Sonos room and lets you point one at the other, live, with no install and no
+  administrator rights. Assignments survive replugging a USB DAC, and it keeps
+  streaming when a speaker is switched off.
 - 🔊 **One Windows output per Sonos room**, named after the room, via the
   `sonosvad` virtual audio driver plus a headless service that binds them.
   Unused outputs are hidden, so the picker shows your rooms and nothing else.
-- 🏠 **"All Sonos"** — one more output that plays to the whole household as a
-  real, synchronised Sonos group (not parallel streams, which drift audibly).
+- 🏠 **"All Sonos" / All rooms** — plays to the whole household as a real,
+  synchronised Sonos group (not parallel streams, which drift audibly).
+  Available both as a driver endpoint and as a destination in the app.
 - 🎚️ **Last-audio-wins.** Start audio on a room while "All Sonos" is playing and
   that room leaves the party; when it falls silent, the party takes it back.
 - 💤 **Idle release.** A silent output hands its room back to the Sonos app
@@ -145,11 +170,41 @@ Available streaming profiles (latency includes the fixed Sonos buffer):
 
 ## Quickstart
 
-### Rooms as Windows outputs (the product)
+### Sonos Router (the app)
+
+The fastest route to sound in another room. No install, no reboot, no
+administrator rights.
+
+```powershell
+# 1. Build it (see Building for the MSVC prerequisite).
+cargo build --release -p sonos-driver-gui
+
+# 2. Run it.
+.\target\release\sonos-router.exe
+```
+
+The window lists every audio output this PC has, one per row, with **Default
+output** at the top — that row follows whatever Windows is currently set to, so
+it keeps working when you switch headphones. Pick a room next to an output (or
+**All rooms**), press **Start**, and audio playing on that output appears on the
+speakers.
+
+- **Change your mind while it plays.** Reassign a row and press **Apply**.
+- **Closing the window keeps it running** in the notification area; audio stops
+  only when you quit, because the app *is* the streamer.
+- **Your routes are remembered** in `%APPDATA%\sonos-driver\routes.toml`, and
+  that file is the same format the `sonoscast` service reads — configure it in
+  the app, then run it headless at boot if you want it always on.
+- **If no rooms appear**, your network is blocking multicast. Open **Settings**,
+  enter the IP of any one Sonos player as the seed host, and rescan; it will
+  find the rest from there.
+
+### Rooms as Windows outputs (the driver)
 
 This installs the `sonosvad` driver and the headless service, after which every
-room shows up in the Windows sound picker. It needs an **elevated** shell and a
-one-time reboot to enable test signing.
+room shows up in the Windows sound picker itself — no app running, nothing to
+launch. It needs an **elevated** shell and a one-time reboot to enable test
+signing.
 
 ```powershell
 # 1. Enable test signing (reboots), then create a test certificate.
@@ -178,9 +233,11 @@ service at any one player and it will find the rest:
 including verification and rollback, in
 [docs/DRIVER-SETUP.md](docs/DRIVER-SETUP.md).
 
-### Driverless mode (no install, no reboot)
+### Driverless CLI (scripting and per-app routing)
 
-Everything except the sound picker, with nothing installed:
+The same engine as the app, driven from a terminal — for headless machines,
+scripts, and the one thing neither the app nor the driver can do: routing a
+single application.
 
 ```powershell
 # 1. Build the release binary (see Building for the MSVC prerequisite).
@@ -484,7 +541,7 @@ zip — no Rust toolchain needed on the target machine:
 pwsh -File scripts/package.ps1
 ```
 
-The zip bundles both binaries (`sonos-driver.exe` and `sonos-driver-gui.exe`),
+The zip bundles both binaries (`sonos-driver.exe` and `sonos-router.exe`),
 `README.md`, `CHANGELOG.md`, both licence files, and an example `sonos-driver.toml`. Run
 `Get-Help scripts/package.ps1 -Detailed` for options (skip the build, change the output
 directory, etc.). The script must run from a shell with the MSVC environment initialised,
@@ -525,15 +582,17 @@ sonos-vad-service ─ headless LocalSystem service: one bridge per room  (sonosv
 sonos-routing ───── driverless planner: routes -> rooms, conflicts, ports (no I/O)
 sonos-cast-service ─ driverless host: library + service                 (sonos-cast-svc)
 sonos-driver-cli ── clap command-line UX (list / stream / cast / stop / config / vad)
-sonos-driver-gui ── legacy single-room tray app; kept for debugging, not the product
+sonos-driver-gui ── Sonos Router: the routing-table desktop app        (sonos-router)
 driver/sonosvad ─── C++ PortCls/WaveRT virtual audio driver (MS-PL derivation)
 ```
 
-The two service crates are the only things that differ between the modes, and
-they share everything below `sonos-driver-core`. `sonos-cast-service` depends on
-no `sonos-vad-*` crate and the driver depends on neither, so the driverless path
-cannot destabilise the kernel path — the property that makes it a useful
-diagnostic when something misbehaves.
+The two service crates are the only things that differ between the driver and
+driverless modes, and they share everything below `sonos-driver-core`.
+`sonos-cast-service` depends on no `sonos-vad-*` crate and the driver depends on
+neither, so the driverless path cannot destabilise the kernel path — the
+property that makes it a useful diagnostic when something misbehaves. The app
+sits on top of `sonos-cast-service` as a third front end to that same engine, so
+a route behaves identically however it was configured.
 
 The driver is a **null sink**: it accepts a render stream and advances its
 position at exactly real time. Audio never crosses the kernel boundary, because

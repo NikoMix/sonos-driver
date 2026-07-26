@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Sonos Router — a routing app that maps each Windows output to a Sonos
+  room, live.** Launch `sonos-router.exe`, see every audio output this PC has
+  and every room the household has, point one at the other and press Start. No
+  install, no reboot, no administrator rights. See
+  [ADR-0020](docs/adr/0020-runtime-routing-app.md).
+  - **One row per Windows output**, not a rule builder — Windows already decides
+    which output an app plays to, so the only missing fact is where each output
+    should end up. A row left at *Off* behaves exactly as it does today.
+  - **A "Default output" row** that follows whatever Windows is currently set
+    to, resolved at the moment streaming starts and on every retry, so switching
+    headphones does not break the route.
+  - **All rooms** as a destination, forming a real synchronised Sonos group
+    (the same path the driver's "All Sonos" endpoint uses).
+  - **Assignments are keyed by endpoint id**, so unplugging and replugging a USB
+    DAC — or Windows renaming a device — never moves a mapping onto a different
+    output.
+  - **A powered-off speaker does not stop the house.** Its route is reported as
+    offline and skipped; every other route still plays.
+  - **Apply while streaming** restarts the routes atomically rather than running
+    two workers that would fight over ports and rooms.
+  - **Routes persist** to `%APPDATA%\sonos-driver\routes.toml` in the exact
+    format `sonos-driver cast --config` and the `sonoscast` service already
+    read — configure in the app, run headless at boot if you want it always on.
+  - Closing the window keeps it running in the notification area; the app is the
+    streamer, so quitting stops the audio.
+  - The routing table, validation and state machine are pure and unit-tested
+    (68 tests) with no egui, threads or I/O, and the whole app is exercised
+    end to end against real hardware by `--example smoke`.
+- **`WorkerEvent` / `Observer` in `sonos-cast-service`** so the streaming worker
+  reports `Discovering` / `Streaming(routes)` / `Failed` / `Stopped` instead of
+  only logging it. The services pass a silent observer and are unchanged.
 - **Every Sonos room is now a native Windows audio output**, plus an **All
   Sonos** output that plays to the whole household at once. Pick a room in the
   Windows sound picker and system audio plays there; there is no GUI, by design.
@@ -92,6 +123,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The desktop binary is now **`sonos-router.exe`** (was `sonos-driver-gui.exe`);
+  the crate is still `sonos-driver-gui`. Installer shortcuts and the release
+  payload follow the new name.
+- README now presents **three** ways to run the project — the app, the
+  driverless CLI/service, and the kernel driver — and leads with the app, since
+  it is the one that needs nothing installed.
 - **Default streaming profile is now FLAC** (`audio-core`). The bridge previously
   defaulted to raw L16 PCM, which real Sonos players reject ("unable to play
   'stream' — the file is in an unsupported format"); RIFF/WAVE PCM is likewise
@@ -107,6 +144,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A failed route now actually retries instead of silently giving up.** Every
+  multi-room session was handed the *caller's* cancellation flag, and session
+  teardown sets that flag — so the first room to finish or fail latched the
+  supervisor's stop and the worker's retry loop exited for good. A speaker being
+  switched off, or one transient network error, permanently killed the stream.
+  Sessions now get their own teardown flags and cancellation is relayed inward,
+  one way. This affected `sonos-driver cast`, the `sonoscast` service and the
+  app alike. See [ADR-0021](docs/adr/0021-cancellation-versus-teardown.md).
 - **A `--seed-host` never reached the room bridges, so streaming to a named room
   failed on networks without SSDP multicast.** Both service hosts resolved the
   seed, used it for discovery, then dropped it: `MultiRoomBridge` clones a

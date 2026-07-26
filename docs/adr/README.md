@@ -27,6 +27,8 @@ supersedes the old one (and update the old one's status to "Superseded by ADR-N"
 - [0017 — Kernel virtual-audio driver: a scoped, personal-use revisit of ADR-0014](./0017-kernel-virtual-audio-driver.md)
 - [0018 — Loopback capture, endpoint renaming, and a single service host](./0018-loopback-rename-and-service-hosting.md)
 - [0019 — A driverless routing mode alongside the kernel driver](./0019-driverless-routing-mode.md)
+- [0020 — A runtime routing app that maps outputs to rooms](./0020-runtime-routing-app.md)
+- [0021 — Cancellation and teardown are separate signals](./0021-cancellation-versus-teardown.md)
 
 ## Template
 

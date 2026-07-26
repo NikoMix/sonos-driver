@@ -16,6 +16,8 @@ use sonos_driver_core::{
 };
 use sonos_routing::{plan, PlannedRoute, Route, Source};
 
+use crate::observer::{Observer, RouteReport, WorkerEvent};
+
 /// How long to wait before retrying after a failed startup attempt.
 ///
 /// The service starts at boot, which is exactly when the network stack, DHCP
@@ -30,6 +32,12 @@ const RETRY_MAX: Duration = Duration::from_secs(60);
 pub struct WorkerSettings {
     /// Configuration file to load.
     pub config_path: Option<PathBuf>,
+    /// Audio settings supplied by the caller, overriding the file's.
+    ///
+    /// Together with [`routes`](Self::routes) this lets an interactive front
+    /// end apply a change without a round trip through disk — and without a
+    /// half-written or hand-corrupted file being able to stop it.
+    pub config: Option<Config>,
     /// Seed host override for discovery.
     pub seed_host: Option<String>,
     /// Discovery timeout.
@@ -39,16 +47,44 @@ pub struct WorkerSettings {
     /// Lets `sonos-cast-svc console --room Küche` work without writing a config
     /// file first, which is how most people will try this the first time.
     pub routes: Option<Vec<Route>>,
+    /// Where to report lifecycle changes, for front ends that display them.
+    ///
+    /// Silent by default: the service and `sonos-driver cast` use logs.
+    pub observer: Observer,
 }
 
 impl Default for WorkerSettings {
     fn default() -> Self {
         Self {
             config_path: Some(crate::config::default_config_path()),
+            config: None,
             seed_host: None,
             discovery_timeout: Duration::from_secs(5),
             routes: None,
+            observer: Observer::silent(),
         }
+    }
+}
+
+impl WorkerSettings {
+    /// The audio settings and routes to use for one attempt.
+    ///
+    /// Caller-supplied values win over the file. When both are supplied the
+    /// file is not read at all, so an interactive front end that has already
+    /// validated everything cannot be blocked by a config file it is not using.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the file has to be read and cannot be, or does not parse.
+    fn resolve(&self) -> anyhow::Result<(Config, Vec<Route>)> {
+        if let (Some(config), Some(routes)) = (self.config.clone(), self.routes.clone()) {
+            return Ok((config, routes));
+        }
+        let (loaded, file_routes) = crate::config::load(self.config_path.as_deref())?;
+        Ok((
+            self.config.clone().unwrap_or(loaded),
+            self.routes.clone().unwrap_or(file_routes),
+        ))
     }
 }
 
@@ -56,7 +92,8 @@ impl Default for WorkerSettings {
 ///
 /// Infallible by design: startup failures are retried rather than returned,
 /// because "the household was not reachable at boot" is a normal transient
-/// condition on an auto-start service.
+/// condition on an auto-start service. Callers that need to know attach an
+/// [`Observer`](crate::Observer).
 pub fn run(settings: &WorkerSettings, stop: &StopHandle) {
     let mut backoff = RETRY_MIN;
 
@@ -65,31 +102,35 @@ pub fn run(settings: &WorkerSettings, stop: &StopHandle) {
             Ok(()) => {
                 if stop.is_stop_requested() {
                     tracing::info!("stop requested; service shutting down");
+                    settings.observer.emit(WorkerEvent::Stopped);
                     return;
                 }
                 tracing::warn!("all route bridges ended unexpectedly; re-planning");
                 backoff = RETRY_MIN;
             }
             Err(err) => {
+                let reason = format!("{err:#}");
                 tracing::error!(
-                    error = %format!("{err:#}"),
+                    error = %reason,
                     retry_in_secs = backoff.as_secs(),
                     "service iteration failed; retrying"
                 );
+                settings.observer.emit(WorkerEvent::Failed(reason));
                 backoff = (backoff * 2).min(RETRY_MAX);
             }
         }
 
         if sleep_unless_stopped(stop, backoff) {
-            return;
+            break;
         }
     }
+
+    settings.observer.emit(WorkerEvent::Stopped);
 }
 
 /// One full plan-and-stream cycle.
 fn run_once(settings: &WorkerSettings, stop: &StopHandle) -> anyhow::Result<()> {
-    let (mut config, file_routes) = crate::config::load(settings.config_path.as_deref())?;
-    let routes = settings.routes.clone().unwrap_or(file_routes);
+    let (mut config, routes) = settings.resolve()?;
     if routes.is_empty() {
         anyhow::bail!(
             "no routes are configured; add a [[route]] to {}",
@@ -103,6 +144,7 @@ fn run_once(settings: &WorkerSettings, stop: &StopHandle) -> anyhow::Result<()> 
 
     let seed = sonos_driver_core::apply_seed_host(settings.seed_host.as_deref(), &mut config);
 
+    settings.observer.emit(WorkerEvent::Discovering);
     tracing::info!(seed = ?seed, "discovering Sonos household");
     let rooms = discover_rooms(seed.as_deref(), settings.discovery_timeout)
         .context("discovering Sonos rooms")?;
@@ -115,6 +157,9 @@ fn run_once(settings: &WorkerSettings, stop: &StopHandle) -> anyhow::Result<()> 
 
     let planned = plan(&routes, &rooms, config.stream.port).context("planning routes")?;
     log_plan(&planned);
+    settings.observer.emit(WorkerEvent::Streaming(
+        planned.iter().map(RouteReport::from_planned).collect(),
+    ));
 
     let mut supervisor = MultiRoomBridge::new(config);
     supervisor.adopt_stop_handle(stop);
@@ -236,8 +281,7 @@ fn log_plan(planned: &[PlannedRoute]) {
 ///
 /// Fails for the same reasons a real run would fail to start.
 pub fn dry_run(settings: &WorkerSettings) -> anyhow::Result<()> {
-    let (config, file_routes) = crate::config::load(settings.config_path.as_deref())?;
-    let routes = settings.routes.clone().unwrap_or(file_routes);
+    let (config, routes) = settings.resolve()?;
     if routes.is_empty() {
         anyhow::bail!("no routes are configured");
     }

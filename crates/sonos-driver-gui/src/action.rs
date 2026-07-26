@@ -1,58 +1,71 @@
-//! The pure action/effect reducer at the heart of the UI.
+//! The pure action/effect reducer at the heart of the app.
 //!
 //! [`reduce`] is the *only* way [`AppState`] changes. It takes an [`Action`]
-//! (originating from a click, a tray command, a background thread or a timer),
-//! mutates the state, and returns a list of [`Effect`]s for the shell to carry
-//! out (spawn a thread, start/stop the bridge, persist the config, drive the
-//! window). Keeping this logic free of I/O makes every state transition
-//! unit-testable without a display or a network.
+//! (a click, a tray command, a background thread or a timer), mutates the
+//! state, and returns [`Effect`]s for the shell to carry out (spawn a thread,
+//! start/stop streaming, persist the config, drive the window). Keeping this
+//! logic free of I/O makes every state transition unit-testable without a
+//! display, a sound card or a Sonos player.
+//!
+//! Two rules are enforced here rather than in the UI, because they are the ones
+//! that would otherwise produce confusing behaviour:
+//!
+//! 1. **A conflicting table is never started.** The planner would reject it a
+//!    few seconds later from a background thread; refusing on the click, with
+//!    the reason, is the difference between a mistake and a mystery.
+//! 2. **Applying while streaming stops first.** Two workers would bind the same
+//!    ports and fight over the same rooms, so a restart is queued and resumed
+//!    when the old one confirms it has stopped.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use audio_core::Config;
+use sonos_cast_service::{RouteReport, WorkerEvent};
+use sonos_routing::{Route, RouteConfig};
 
-use crate::bridge::SessionOutcome;
-use crate::state::{AppState, BridgeStatus, CaptureDevice, DeviceScan, Discovery, Room};
+use crate::routes::Destination;
+use crate::state::{AppState, Output, Room, Scan, StreamStatus};
 
-/// Discovery floor: shorter searches rarely collect any responders.
+/// Discovery floor: shorter searches rarely collect every responder.
 const MIN_DISCOVERY: Duration = Duration::from_secs(3);
 
 /// An input to the reducer.
 #[derive(Debug, Clone)]
 pub enum Action {
+    /// Enumerate the Windows render endpoints.
+    RefreshOutputs,
+    /// Endpoint enumeration completed.
+    OutputsEnumerated(Vec<Output>),
+    /// Endpoint enumeration failed, with a human-readable reason.
+    OutputScanFailed(String),
     /// Begin background Sonos discovery.
-    StartDiscovery,
+    RefreshRooms,
     /// Discovery completed with the given rooms.
     RoomsDiscovered(Vec<Room>),
     /// Discovery failed with a human-readable reason.
     DiscoveryFailed(String),
-    /// Select the room at the given index.
-    SelectRoom(usize),
-    /// Enumerate the available capture (render) endpoints.
-    RefreshDevices,
-    /// Capture-device enumeration completed with the given endpoints.
-    DevicesEnumerated(Vec<CaptureDevice>),
-    /// Capture-device enumeration failed with a human-readable reason.
-    DeviceScanFailed(String),
-    /// Choose the capture device: `None` selects the system default.
-    SelectDevice(Option<usize>),
-    /// Start streaming to the configured target.
-    StartBridge,
-    /// Request that streaming stop.
-    StopBridge,
-    /// The bridge reported that streaming has begun.
-    BridgeRunning,
-    /// The bridge session ended (cleanly or with an error).
-    BridgeEnded(SessionOutcome),
-    /// A fresh live count of captured audio blocks.
-    LiveCaptured(u64),
-    /// Persist the current settings form to disk.
-    SaveConfig,
+    /// Send the output at `row` to `destination`.
+    Assign {
+        /// Index into [`RoutingTable::rows`](crate::routes::RoutingTable::rows).
+        row: usize,
+        /// Where that output's audio should go.
+        destination: Destination,
+    },
+    /// Turn every route off.
+    ClearRouting,
+    /// Start streaming the current table, or restart it if already streaming.
+    Apply,
+    /// Stop streaming.
+    Stop,
+    /// The streaming worker reported something.
+    Worker(WorkerEvent),
+    /// Persist the current table and settings.
+    Save,
     /// The configuration was saved successfully.
-    ConfigSaved,
+    Saved,
     /// Saving the configuration failed.
-    ConfigSaveFailed(String),
+    SaveFailed(String),
     /// Reveal the main window.
     ShowWindow,
     /// Hide the main window to the tray.
@@ -64,26 +77,34 @@ pub enum Action {
 /// A side effect for the shell to execute after a [`reduce`] call.
 #[derive(Debug, Clone)]
 pub enum Effect {
-    /// Spawn background discovery with the given timeout.
+    /// Enumerate the render endpoints off the UI thread.
+    EnumerateOutputs,
+    /// Spawn background discovery.
     SpawnDiscovery {
-        /// How long to wait for `SSDP` responses.
+        /// Any one known player's address, or `None` for multicast.
+        seed: Option<String>,
+        /// How long to wait for responses.
         timeout: Duration,
     },
-    /// Enumerate the available capture (render) endpoints off the UI thread.
-    EnumerateDevices,
-    /// Start the bridge worker for the given configuration.
-    StartBridge {
-        /// The fully validated configuration to stream with.
+    /// Start the streaming worker.
+    StartWorker {
+        /// The validated audio settings.
         config: Box<Config>,
+        /// The routes to run.
+        routes: Vec<Route>,
+        /// Seed host for the worker's own discovery.
+        seed: Option<String>,
     },
-    /// Request that the running bridge worker stop.
-    StopBridge,
-    /// Persist `config` to `path`.
-    SaveConfig {
+    /// Ask the running worker to stop.
+    StopWorker,
+    /// Persist `config` and `routes` to `path`.
+    Save {
         /// Destination file.
         path: PathBuf,
-        /// The configuration to write.
+        /// The settings to write.
         config: Box<Config>,
+        /// The routes to write.
+        routes: Vec<RouteConfig>,
     },
     /// Reveal the main window.
     ShowWindow,
@@ -93,489 +114,781 @@ pub enum Effect {
     Quit,
 }
 
-/// Advance `state` by `action`, returning the effects the shell must perform.
+/// Advance `state` by `action`, returning the side effects to run.
 #[must_use]
 pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
     match action {
-        Action::StartDiscovery => start_discovery(state),
+        Action::RefreshOutputs => refresh_outputs(state),
+        Action::OutputsEnumerated(outputs) => {
+            state.outputs = Scan::Done;
+            state.table.sync_outputs(outputs);
+            restore_saved(state);
+            describe(state);
+            Vec::new()
+        }
+        Action::OutputScanFailed(reason) => {
+            state.status_line = format!("Could not list the Windows outputs: {reason}");
+            state.outputs = Scan::Failed(reason);
+            Vec::new()
+        }
+        Action::RefreshRooms => refresh_rooms(state),
         Action::RoomsDiscovered(rooms) => {
-            rooms_discovered(state, rooms);
+            state.discovery = Scan::Done;
+            state.rooms = rooms;
+            resolve_destinations(state);
+            describe(state);
             Vec::new()
         }
         Action::DiscoveryFailed(reason) => {
-            state.discovery = Discovery::Failed(reason.clone());
-            state.status_line = format!("Discovery failed: {reason}");
+            state.status_line = format!("Could not find any Sonos rooms: {reason}");
+            state.discovery = Scan::Failed(reason);
             Vec::new()
         }
-        Action::SelectRoom(index) => {
-            select_room(state, index);
-            Vec::new()
-        }
-        Action::RefreshDevices => refresh_devices(state),
-        Action::DevicesEnumerated(devices) => {
-            devices_enumerated(state, devices);
-            Vec::new()
-        }
-        Action::DeviceScanFailed(reason) => {
-            state.device_scan = DeviceScan::Failed(reason.clone());
-            state.status_line = format!("Device scan failed: {reason}");
-            Vec::new()
-        }
-        Action::SelectDevice(index) => {
-            select_device(state, index);
-            Vec::new()
-        }
-        Action::StartBridge => start_bridge(state),
-        Action::StopBridge => stop_bridge(state),
-        Action::BridgeRunning => {
-            bridge_running(state);
-            Vec::new()
-        }
-        Action::BridgeEnded(outcome) => {
-            bridge_ended(state, outcome);
-            Vec::new()
-        }
-        Action::LiveCaptured(count) => {
-            if state.bridge.is_active() {
-                state.live_captured = count;
+        Action::Assign { row, destination } => {
+            if state.table.assign(row, destination) {
+                state.unapplied = state.stream.is_active();
+                describe(state);
             }
             Vec::new()
         }
-        Action::SaveConfig => save_config(state),
-        Action::ConfigSaved => {
-            "Settings saved".clone_into(&mut state.status_line);
+        Action::ClearRouting => {
+            state.table.clear();
+            state.unapplied = state.stream.is_active();
+            describe(state);
             Vec::new()
         }
-        Action::ConfigSaveFailed(reason) => {
-            state.status_line = format!("Save failed: {reason}");
+        Action::Apply => apply(state),
+        Action::Stop => stop(state),
+        Action::Worker(event) => worker(state, event),
+        Action::Save => save(state),
+        Action::Saved => {
+            state.status_line = format!("Saved to {}", state.config_path.display());
+            Vec::new()
+        }
+        Action::SaveFailed(reason) => {
+            state.status_line = format!("Could not save: {reason}");
             Vec::new()
         }
         Action::ShowWindow => vec![Effect::ShowWindow],
         Action::HideWindow => vec![Effect::HideWindow],
-        Action::Quit => quit(state),
+        Action::Quit => vec![Effect::Quit],
     }
 }
 
-/// Begin discovery unless a search is already running.
-fn start_discovery(state: &mut AppState) -> Vec<Effect> {
+fn refresh_outputs(state: &mut AppState) -> Vec<Effect> {
+    if state.outputs.is_running() {
+        return Vec::new();
+    }
+    state.outputs = Scan::Running;
+    vec![Effect::EnumerateOutputs]
+}
+
+fn refresh_rooms(state: &mut AppState) -> Vec<Effect> {
     if state.discovery.is_running() {
         return Vec::new();
     }
-    state.discovery = Discovery::Running;
-    "Discovering Sonos rooms".clone_into(&mut state.status_line);
+    state.discovery = Scan::Running;
+    status(state, "Looking for Sonos rooms…");
     vec![Effect::SpawnDiscovery {
+        seed: state.settings.seed(),
         timeout: discovery_timeout(state),
     }]
 }
 
-/// Record discovered rooms and clear the running flag.
-fn rooms_discovered(state: &mut AppState, rooms: Vec<Room>) {
-    let count = rooms.len();
-    state.rooms.replace(rooms);
-    state.discovery = Discovery::Idle;
-    state.status_line = match count {
-        0 => "No Sonos rooms found".to_owned(),
-        1 => "Found 1 Sonos room".to_owned(),
-        n => format!("Found {n} Sonos rooms"),
-    };
-}
-
-/// Select a room and copy its identity into the settings form.
-fn select_room(state: &mut AppState, index: usize) {
-    if !state.rooms.select(index) {
-        return;
-    }
-    if let Some(room) = state.rooms.selected_room() {
-        state.form.room = room.name.clone();
-        state.form.uuid = room.uuid.clone();
-        state.status_line = format!("Target: {}", room.label());
-    }
-}
-
-/// Begin capture-device enumeration unless one is already running.
-fn refresh_devices(state: &mut AppState) -> Vec<Effect> {
-    if state.device_scan.is_running() {
-        return Vec::new();
-    }
-    state.device_scan = DeviceScan::Running;
-    "Listing capture devices".clone_into(&mut state.status_line);
-    vec![Effect::EnumerateDevices]
-}
-
-/// Record the enumerated capture devices and clear the running flag.
-fn devices_enumerated(state: &mut AppState, devices: Vec<CaptureDevice>) {
-    let count = devices.len();
-    state.devices = devices;
-    state.device_scan = DeviceScan::Idle;
-    state.status_line = match count {
-        0 => "No capture devices found".to_owned(),
-        1 => "Found 1 capture device".to_owned(),
-        n => format!("Found {n} capture devices"),
-    };
-}
-
-/// Choose a capture device by index, writing its id into the form; `None`
-/// selects the system default by clearing the device selector.
-fn select_device(state: &mut AppState, index: Option<usize>) {
-    if let Some(device) = index.and_then(|i| state.devices.get(i)) {
-        device.id.clone_into(&mut state.form.device);
-        state.status_line = format!("Capture device: {}", device.name);
-    } else {
-        state.form.device.clear();
-        "Capture device: system default".clone_into(&mut state.status_line);
-    }
-}
-
-/// Validate the form and start the bridge, or record why it cannot start.
-fn start_bridge(state: &mut AppState) -> Vec<Effect> {
-    if state.bridge.is_active() {
-        return Vec::new();
-    }
-    if !state.form.has_target() {
-        let reason = "no Sonos target: discover and select a room first".to_owned();
-        state.bridge = BridgeStatus::Failed(reason.clone());
-        state.status_line = reason;
-        return Vec::new();
-    }
-    match state.form.to_config() {
-        Ok(config) => {
-            state.active_config = config.clone();
-            state.bridge = BridgeStatus::Starting;
-            state.live_captured = 0;
-            "Starting bridge".clone_into(&mut state.status_line);
-            vec![Effect::StartBridge {
-                config: Box::new(config),
-            }]
-        }
-        Err(err) => {
-            let reason = err.to_string();
-            state.bridge = BridgeStatus::Failed(reason.clone());
-            state.status_line = format!("Invalid settings: {reason}");
-            Vec::new()
-        }
-    }
-}
-
-/// Request a stop if a session is active.
-fn stop_bridge(state: &mut AppState) -> Vec<Effect> {
-    if !state.bridge.is_active() {
-        return Vec::new();
-    }
-    state.bridge = BridgeStatus::Stopping;
-    "Stopping bridge".clone_into(&mut state.status_line);
-    vec![Effect::StopBridge]
-}
-
-/// Transition a starting session into the running state.
-fn bridge_running(state: &mut AppState) {
-    if matches!(
-        state.bridge,
-        BridgeStatus::Starting | BridgeStatus::Stopping
-    ) {
-        state.bridge = BridgeStatus::Running;
-        "Streaming to Sonos".clone_into(&mut state.status_line);
-    }
-}
-
-/// Record the outcome of a finished session.
-fn bridge_ended(state: &mut AppState, outcome: SessionOutcome) {
-    state.live_captured = outcome.metrics.captured;
-    state.last_metrics = Some(outcome.metrics);
-    state.last_latency = Some(outcome.latency);
-    if let Some(reason) = outcome.error {
-        state.bridge = BridgeStatus::Failed(reason.clone());
-        state.status_line = format!("Bridge stopped: {reason}");
-    } else {
-        state.bridge = BridgeStatus::Stopped;
-        "Bridge stopped".clone_into(&mut state.status_line);
-    }
-}
-
-/// Validate the form and persist it, or record the validation error.
-fn save_config(state: &mut AppState) -> Vec<Effect> {
-    match state.form.to_config() {
-        Ok(config) => {
-            state.active_config = config.clone();
-            vec![Effect::SaveConfig {
-                path: state.config_path.clone(),
-                config: Box::new(config),
-            }]
-        }
-        Err(err) => {
-            state.status_line = format!("Cannot save invalid settings: {err}");
-            Vec::new()
-        }
-    }
-}
-
-/// Stop any active session and quit.
-fn quit(state: &mut AppState) -> Vec<Effect> {
-    let mut effects = Vec::new();
-    if state.bridge.is_active() {
-        state.bridge = BridgeStatus::Stopping;
-        effects.push(Effect::StopBridge);
-    }
-    effects.push(Effect::Quit);
-    effects
-}
-
-/// The discovery timeout from the form, floored at [`MIN_DISCOVERY`].
 fn discovery_timeout(state: &AppState) -> Duration {
-    let secs = state
-        .form
+    let configured = state
+        .settings
         .discovery_timeout_secs
         .trim()
         .parse::<u64>()
-        .unwrap_or(0);
-    Duration::from_secs(secs).max(MIN_DISCOVERY)
+        .unwrap_or(3);
+    Duration::from_secs(configured).max(MIN_DISCOVERY)
+}
+
+/// Start streaming, or queue a restart when a worker is already running.
+fn apply(state: &mut AppState) -> Vec<Effect> {
+    if state.table.is_idle() {
+        status(
+            state,
+            "Nothing is routed yet — pick a room next to an output first.",
+        );
+        return Vec::new();
+    }
+
+    let conflicts = state.table.conflicts();
+    if let Some(conflict) = conflicts.first() {
+        status(state, &conflict.message);
+        return Vec::new();
+    }
+
+    if state.stream.is_active() {
+        // Restart: stop now, start again on the Stopped event.
+        state.unapplied = true;
+        state.stream = StreamStatus::Stopping;
+        status(state, "Applying changes…");
+        return vec![Effect::StopWorker];
+    }
+
+    start(state)
+}
+
+/// Build and launch the worker. The caller has already checked the table.
+fn start(state: &mut AppState) -> Vec<Effect> {
+    let config = match state.settings.to_config() {
+        Ok(config) => config,
+        Err(error) => {
+            state.status_line = format!("Check the settings: {error}");
+            state.stream = StreamStatus::Stopped;
+            state.unapplied = false;
+            return Vec::new();
+        }
+    };
+
+    let routes = state.table.to_routes(&state.rooms);
+    if routes.is_empty() {
+        state.status_line = if state.rooms.is_empty() {
+            "No Sonos rooms have been found yet — try Find rooms, or set a seed host in \
+             Settings."
+                .to_owned()
+        } else {
+            "Every routed room is currently offline. Switch the speakers on, or pick \
+             different rooms."
+                .to_owned()
+        };
+        state.stream = StreamStatus::Stopped;
+        state.unapplied = false;
+        return Vec::new();
+    }
+
+    let seed = state.settings.seed();
+    state.stream = StreamStatus::Starting;
+    state.live.clear();
+    state.unapplied = false;
+    state.status_line = format!(
+        "Starting {} route{}…",
+        routes.len(),
+        if routes.len() == 1 { "" } else { "s" }
+    );
+
+    vec![Effect::StartWorker {
+        config: Box::new(config),
+        routes,
+        seed,
+    }]
+}
+
+fn stop(state: &mut AppState) -> Vec<Effect> {
+    if !state.stream.is_active() {
+        return Vec::new();
+    }
+    // A queued restart is cancelled: an explicit Stop outranks it.
+    state.unapplied = false;
+    state.stream = StreamStatus::Stopping;
+    status(state, "Stopping…");
+    vec![Effect::StopWorker]
+}
+
+fn worker(state: &mut AppState, event: WorkerEvent) -> Vec<Effect> {
+    match event {
+        WorkerEvent::Discovering => {
+            if state.stream != StreamStatus::Stopping {
+                state.stream = StreamStatus::Starting;
+                status(state, "Finding the rooms…");
+            }
+            Vec::new()
+        }
+        WorkerEvent::Streaming(reports) => {
+            if state.stream != StreamStatus::Stopping {
+                state.stream = StreamStatus::Streaming;
+                state.status_line = summarise(&reports);
+            }
+            state.live = reports;
+            Vec::new()
+        }
+        WorkerEvent::Failed(reason) => {
+            state.live.clear();
+            if state.stream != StreamStatus::Stopping {
+                state.status_line = format!("{reason} — retrying");
+                state.stream = StreamStatus::Retrying(reason);
+            }
+            Vec::new()
+        }
+        WorkerEvent::Stopped => {
+            state.live.clear();
+            state.stream = StreamStatus::Stopped;
+            if state.unapplied {
+                // The restart queued by `apply`.
+                return start(state);
+            }
+            status(state, "Stopped");
+            Vec::new()
+        }
+    }
+}
+
+fn save(state: &mut AppState) -> Vec<Effect> {
+    match state.settings.to_config() {
+        Ok(config) => vec![Effect::Save {
+            path: state.config_path.clone(),
+            config: Box::new(config),
+            routes: state.table.to_configs(),
+        }],
+        Err(error) => {
+            state.status_line = format!("Check the settings: {error}");
+            Vec::new()
+        }
+    }
+}
+
+/// Replace the footer message, reusing the existing allocation.
+///
+/// The status line is rewritten on nearly every action, so this is both the
+/// tidier call site and the one clippy's `assigning_clones` lint asks for.
+fn status(state: &mut AppState, text: &str) {
+    state.status_line.clear();
+    state.status_line.push_str(text);
+}
+
+/// Place the routing read from disk, now that the outputs are known.
+///
+/// Runs once: the saved list is taken, so a later re-enumeration cannot undo
+/// edits the user has made since.
+fn restore_saved(state: &mut AppState) {
+    if state.saved_routes.is_empty() {
+        return;
+    }
+    let saved = std::mem::take(&mut state.saved_routes);
+    state.table.apply_configs(&saved, &state.rooms);
+}
+
+/// Re-attach discovered rooms to assignments after discovery.
+///
+/// Two cases, both of which would otherwise look like a lost setting:
+///
+/// * a room **renamed** in the Sonos app keeps its `UUID`, so the assignment is
+///   still correct and only the label the user sees is stale;
+/// * a route **restored from disk** before discovery holds a room *name* where
+///   a `UUID` belongs, because the saved file is written in names to stay
+///   portable. It resolves the first time the household answers.
+fn resolve_destinations(state: &mut AppState) {
+    let updates: Vec<(usize, Destination)> = state
+        .table
+        .rows()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, row)| {
+            let Destination::Room { uuid, name } = &row.destination else {
+                return None;
+            };
+            let resolved = state
+                .rooms
+                .iter()
+                .find(|room| &room.uuid == uuid)
+                .or_else(|| {
+                    state
+                        .rooms
+                        .iter()
+                        .find(|room| room.name.eq_ignore_ascii_case(name))
+                })?;
+            (&resolved.uuid != uuid || &resolved.name != name).then(|| {
+                (
+                    index,
+                    Destination::Room {
+                        uuid: resolved.uuid.clone(),
+                        name: resolved.name.clone(),
+                    },
+                )
+            })
+        })
+        .collect();
+
+    for (index, destination) in updates {
+        state.table.assign(index, destination);
+    }
+}
+
+/// Write the idle status line describing what the table currently says.
+fn describe(state: &mut AppState) {
+    if state.stream.is_active() {
+        if state.unapplied {
+            status(state, "Changes are not live yet — press Apply.");
+        }
+        return;
+    }
+
+    if let Some(conflict) = state.table.conflicts().first() {
+        status(state, &conflict.message);
+        return;
+    }
+
+    let routed = state.table.routed_count();
+    state.status_line = if routed == 0 {
+        if state.rooms.is_empty() {
+            "No rooms found yet. Press Find rooms, or set a seed host in Settings.".to_owned()
+        } else {
+            "Pick a room next to an output, then press Start.".to_owned()
+        }
+    } else {
+        format!(
+            "{routed} output{} routed. Press Start.",
+            if routed == 1 { "" } else { "s" }
+        )
+    };
+}
+
+/// One line describing everything that is live.
+fn summarise(reports: &[RouteReport]) -> String {
+    match reports {
+        [] => "Streaming".to_owned(),
+        [one] => format!("Streaming {}", one.label()),
+        many => format!(
+            "Streaming {} routes: {}",
+            many.len(),
+            many.iter()
+                .map(RouteReport::label)
+                .collect::<Vec<_>>()
+                .join("; ")
+        ),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{reduce, Action, Effect};
-    use crate::bridge::SessionOutcome;
-    use crate::metrics::MetricsSnapshot;
-    use crate::state::{AppState, BridgeStatus, CaptureDevice, DeviceScan, Discovery, Room};
-    use sonos_driver_core::control::SonosDevice;
-    use sonos_driver_core::ControllableLatency;
-    use std::net::Ipv4Addr;
+    use crate::routes::Destination;
+    use crate::state::{AppState, Output, Room, Scan, StreamStatus};
+    use sonos_cast_service::{RouteReport, WorkerEvent};
 
-    fn device(id: &str, name: &str, is_default: bool) -> CaptureDevice {
-        CaptureDevice::new(id, name, is_default)
+    fn outputs() -> Vec<Output> {
+        vec![
+            Output::new("id-speakers", "Speakers", true),
+            Output::new("id-hdmi", "LG TV", false),
+        ]
     }
 
-    fn room(uuid: &str, name: &str) -> Room {
-        Room::from_device(&SonosDevice {
-            uuid: uuid.to_owned(),
-            room_name: name.to_owned(),
-            model_name: "Model".to_owned(),
-            ip: Ipv4Addr::LOCALHOST,
-        })
+    fn rooms() -> Vec<Room> {
+        vec![Room::new("RINCON_1", "Küche"), Room::new("RINCON_2", "Bad")]
     }
 
-    /// Apply an action for its state transition, discarding the effects.
-    fn dispatch(state: &mut AppState, action: Action) {
-        let _ = reduce(state, action);
+    fn kitchen() -> Destination {
+        Destination::Room {
+            uuid: "RINCON_1".to_owned(),
+            name: "Küche".to_owned(),
+        }
     }
 
-    #[test]
-    fn start_discovery_runs_once() {
+    /// A state with outputs and rooms already discovered.
+    fn ready() -> AppState {
         let mut state = AppState::default();
-        let effects = reduce(&mut state, Action::StartDiscovery);
-        assert!(state.discovery.is_running());
-        assert!(matches!(
-            effects.as_slice(),
-            [Effect::SpawnDiscovery { .. }]
-        ));
-        // A second request while running must be a no-op.
-        let again = reduce(&mut state, Action::StartDiscovery);
-        assert!(again.is_empty());
+        let _ = reduce(&mut state, Action::OutputsEnumerated(outputs()));
+        let _ = reduce(&mut state, Action::RoomsDiscovered(rooms()));
+        state
     }
 
-    #[test]
-    fn rooms_discovered_populates_and_clears_running() {
-        let mut state = AppState::default();
-        dispatch(&mut state, Action::StartDiscovery);
-        let effects = reduce(
+    /// Drive a state all the way to streaming.
+    fn streaming() -> AppState {
+        let mut state = ready();
+        let _ = reduce(
             &mut state,
-            Action::RoomsDiscovered(vec![room("a", "A"), room("b", "B")]),
-        );
-        assert!(effects.is_empty());
-        assert_eq!(state.discovery, Discovery::Idle);
-        assert_eq!(state.rooms.len(), 2);
-    }
-
-    #[test]
-    fn discovery_failed_is_recorded() {
-        let mut state = AppState::default();
-        dispatch(
-            &mut state,
-            Action::DiscoveryFailed("socket error".to_owned()),
-        );
-        assert!(matches!(state.discovery, Discovery::Failed(_)));
-        assert!(state.status_line.contains("socket error"));
-    }
-
-    #[test]
-    fn select_room_copies_target_into_form() {
-        let mut state = AppState::default();
-        dispatch(
-            &mut state,
-            Action::RoomsDiscovered(vec![room("a", "A"), room("rincon-b", "Bedroom")]),
-        );
-        dispatch(&mut state, Action::SelectRoom(1));
-        assert_eq!(state.form.room, "Bedroom");
-        assert_eq!(state.form.uuid, "rincon-b");
-        assert!(state.form.has_target());
-    }
-
-    #[test]
-    fn start_bridge_without_target_fails_with_no_effect() {
-        let mut state = AppState::default();
-        let effects = reduce(&mut state, Action::StartBridge);
-        assert!(effects.is_empty());
-        assert!(matches!(state.bridge, BridgeStatus::Failed(_)));
-    }
-
-    #[test]
-    fn start_bridge_with_target_emits_start_effect() {
-        let mut state = AppState::default();
-        dispatch(&mut state, Action::RoomsDiscovered(vec![room("a", "Den")]));
-        dispatch(&mut state, Action::SelectRoom(0));
-        let effects = reduce(&mut state, Action::StartBridge);
-        assert_eq!(state.bridge, BridgeStatus::Starting);
-        assert!(matches!(effects.as_slice(), [Effect::StartBridge { .. }]));
-    }
-
-    #[test]
-    fn bridge_running_transitions_from_starting() {
-        let mut state = AppState {
-            bridge: BridgeStatus::Starting,
-            ..AppState::default()
-        };
-        dispatch(&mut state, Action::BridgeRunning);
-        assert_eq!(state.bridge, BridgeStatus::Running);
-    }
-
-    #[test]
-    fn bridge_ended_with_error_records_failure_and_metrics() {
-        let mut state = AppState {
-            bridge: BridgeStatus::Running,
-            ..AppState::default()
-        };
-        let outcome = SessionOutcome {
-            metrics: MetricsSnapshot {
-                captured: 5,
-                streamed: 4,
-                underruns: 1,
-                reconnects: 0,
+            Action::Assign {
+                row: 1,
+                destination: kitchen(),
             },
-            latency: ControllableLatency::default(),
-            error: Some("device vanished".to_owned()),
-        };
-        dispatch(&mut state, Action::BridgeEnded(outcome));
-        assert!(matches!(state.bridge, BridgeStatus::Failed(_)));
-        assert_eq!(state.last_metrics.expect("metrics").captured, 5);
-        assert_eq!(state.live_captured, 5);
+        );
+        let _ = reduce(&mut state, Action::Apply);
+        let _ = reduce(
+            &mut state,
+            Action::Worker(WorkerEvent::Streaming(vec![RouteReport {
+                source: "Speakers".to_owned(),
+                rooms: vec!["Küche".to_owned()],
+                port: 8080,
+                grouped: false,
+            }])),
+        );
+        state
     }
 
     #[test]
-    fn bridge_ended_cleanly_returns_to_stopped() {
-        let mut state = AppState {
-            bridge: BridgeStatus::Stopping,
-            ..AppState::default()
-        };
-        let outcome = SessionOutcome {
-            metrics: MetricsSnapshot::default(),
-            latency: ControllableLatency::default(),
-            error: None,
-        };
-        dispatch(&mut state, Action::BridgeEnded(outcome));
-        assert_eq!(state.bridge, BridgeStatus::Stopped);
-    }
-
-    #[test]
-    fn stop_bridge_when_inactive_is_a_no_op() {
+    fn refreshing_outputs_is_not_started_twice() {
         let mut state = AppState::default();
-        assert!(reduce(&mut state, Action::StopBridge).is_empty());
-        assert_eq!(state.bridge, BridgeStatus::Stopped);
+        assert_eq!(reduce(&mut state, Action::RefreshOutputs).len(), 1);
+        assert!(state.outputs.is_running());
+        assert!(reduce(&mut state, Action::RefreshOutputs).is_empty());
     }
 
     #[test]
-    fn live_captured_updates_only_while_active() {
+    fn discovery_carries_the_seed_host_and_honours_the_floor() {
         let mut state = AppState::default();
-        dispatch(&mut state, Action::LiveCaptured(42));
-        assert_eq!(state.live_captured, 0);
-        state.bridge = BridgeStatus::Running;
-        dispatch(&mut state, Action::LiveCaptured(42));
-        assert_eq!(state.live_captured, 42);
-    }
+        state.settings.seed_host = " 192.168.1.50 ".to_owned();
+        state.settings.discovery_timeout_secs = "1".to_owned();
 
-    #[test]
-    fn save_config_emits_effect_with_path() {
-        let mut state = AppState::default();
-        let effects = reduce(&mut state, Action::SaveConfig);
+        let effects = reduce(&mut state, Action::RefreshRooms);
         match effects.as_slice() {
-            [Effect::SaveConfig { path, .. }] => assert_eq!(path, &state.config_path),
-            other => panic!("expected a single SaveConfig effect, got {other:?}"),
+            [Effect::SpawnDiscovery { seed, timeout }] => {
+                assert_eq!(seed.as_deref(), Some("192.168.1.50"));
+                assert_eq!(*timeout, std::time::Duration::from_secs(3));
+            }
+            other => panic!("expected one discovery effect, got {other:?}"),
         }
     }
 
     #[test]
-    fn quit_while_active_stops_then_quits() {
+    fn a_failed_scan_explains_itself_without_clearing_the_table() {
+        let mut state = ready();
+        let _ = reduce(
+            &mut state,
+            Action::Assign {
+                row: 1,
+                destination: kitchen(),
+            },
+        );
+        let _ = reduce(
+            &mut state,
+            Action::DiscoveryFailed("no response".to_owned()),
+        );
+
+        assert_eq!(state.discovery, Scan::Failed("no response".to_owned()));
+        assert!(state.status_line.contains("no response"));
+        assert_eq!(state.table.routed_count(), 1, "the table is not discarded");
+    }
+
+    #[test]
+    fn an_empty_table_refuses_to_start_and_says_why() {
+        let mut state = ready();
+        assert!(reduce(&mut state, Action::Apply).is_empty());
+        assert_eq!(state.stream, StreamStatus::Stopped);
+        assert!(state.status_line.contains("Nothing is routed"));
+    }
+
+    #[test]
+    fn a_conflicting_table_refuses_to_start_with_the_planner_s_reason() {
+        let mut state = ready();
+        for row in [1, 2] {
+            let _ = reduce(
+                &mut state,
+                Action::Assign {
+                    row,
+                    destination: kitchen(),
+                },
+            );
+        }
+        assert!(reduce(&mut state, Action::Apply).is_empty());
+        assert_eq!(state.stream, StreamStatus::Stopped);
+        assert!(state.status_line.contains("Küche"), "{}", state.status_line);
+    }
+
+    #[test]
+    fn starting_builds_a_worker_effect_from_the_table() {
+        let mut state = ready();
+        let _ = reduce(
+            &mut state,
+            Action::Assign {
+                row: 0,
+                destination: Destination::AllRooms,
+            },
+        );
+
+        let effects = reduce(&mut state, Action::Apply);
+        match effects.as_slice() {
+            [Effect::StartWorker { routes, .. }] => assert_eq!(routes.len(), 1),
+            other => panic!("expected one start effect, got {other:?}"),
+        }
+        assert_eq!(state.stream, StreamStatus::Starting);
+        assert!(!state.unapplied);
+    }
+
+    #[test]
+    fn routing_only_offline_rooms_explains_itself_instead_of_starting() {
+        let mut state = ready();
+        let _ = reduce(
+            &mut state,
+            Action::Assign {
+                row: 1,
+                destination: Destination::Room {
+                    uuid: "RINCON_GONE".to_owned(),
+                    name: "Keller".to_owned(),
+                },
+            },
+        );
+        assert!(reduce(&mut state, Action::Apply).is_empty());
+        assert_eq!(state.stream, StreamStatus::Stopped);
+        assert!(
+            state.status_line.contains("offline"),
+            "{}",
+            state.status_line
+        );
+    }
+
+    #[test]
+    fn bad_settings_are_reported_rather_than_streamed() {
+        let mut state = ready();
+        state.settings.port = "0".to_owned();
+        let _ = reduce(
+            &mut state,
+            Action::Assign {
+                row: 0,
+                destination: Destination::AllRooms,
+            },
+        );
+        assert!(reduce(&mut state, Action::Apply).is_empty());
+        assert!(state.status_line.contains("Check the settings"));
+    }
+
+    #[test]
+    fn applying_while_streaming_stops_first_then_starts_again() {
+        let mut state = streaming();
+        assert_eq!(state.stream, StreamStatus::Streaming);
+
+        let _ = reduce(
+            &mut state,
+            Action::Assign {
+                row: 2,
+                destination: Destination::Room {
+                    uuid: "RINCON_2".to_owned(),
+                    name: "Bad".to_owned(),
+                },
+            },
+        );
+        assert!(state.unapplied, "an edit while live is not live yet");
+
+        let effects = reduce(&mut state, Action::Apply);
+        assert!(matches!(effects.as_slice(), [Effect::StopWorker]));
+        assert_eq!(state.stream, StreamStatus::Stopping);
+
+        // Only once the old worker confirms it is gone does the new one start.
+        let effects = reduce(&mut state, Action::Worker(WorkerEvent::Stopped));
+        match effects.as_slice() {
+            [Effect::StartWorker { routes, .. }] => assert_eq!(routes.len(), 2),
+            other => panic!("expected a restart, got {other:?}"),
+        }
+        assert_eq!(state.stream, StreamStatus::Starting);
+    }
+
+    #[test]
+    fn stopping_cancels_a_queued_restart() {
+        let mut state = streaming();
+        let _ = reduce(&mut state, Action::ClearRouting);
+        let _ = reduce(&mut state, Action::Apply);
+
+        let effects = reduce(&mut state, Action::Stop);
+        assert!(matches!(effects.as_slice(), [Effect::StopWorker]));
+        assert!(!state.unapplied);
+
+        assert!(reduce(&mut state, Action::Worker(WorkerEvent::Stopped)).is_empty());
+        assert_eq!(state.stream, StreamStatus::Stopped);
+    }
+
+    #[test]
+    fn stopping_when_nothing_runs_does_nothing() {
+        let mut state = ready();
+        assert!(reduce(&mut state, Action::Stop).is_empty());
+    }
+
+    #[test]
+    fn a_worker_failure_is_shown_and_the_status_says_it_will_retry() {
+        let mut state = streaming();
+        let _ = reduce(
+            &mut state,
+            Action::Worker(WorkerEvent::Failed("no rooms answered".to_owned())),
+        );
+        assert_eq!(
+            state.stream,
+            StreamStatus::Retrying("no rooms answered".to_owned())
+        );
+        assert!(state.status_line.contains("retrying"));
+        assert!(state.live.is_empty());
+    }
+
+    #[test]
+    fn worker_events_arriving_during_teardown_do_not_resurrect_the_status() {
+        // The worker is mid-retry when the user presses Stop; the late events
+        // must not flip the UI back to "streaming".
+        let mut state = streaming();
+        let _ = reduce(&mut state, Action::Stop);
+        let _ = reduce(&mut state, Action::Worker(WorkerEvent::Discovering));
+        assert_eq!(state.stream, StreamStatus::Stopping);
+        let _ = reduce(
+            &mut state,
+            Action::Worker(WorkerEvent::Streaming(Vec::new())),
+        );
+        assert_eq!(state.stream, StreamStatus::Stopping);
+    }
+
+    #[test]
+    fn streaming_summarises_every_live_route() {
+        let mut state = streaming();
+        let _ = reduce(
+            &mut state,
+            Action::Worker(WorkerEvent::Streaming(vec![
+                RouteReport {
+                    source: "Speakers".to_owned(),
+                    rooms: vec!["Küche".to_owned()],
+                    port: 8080,
+                    grouped: false,
+                },
+                RouteReport {
+                    source: "LG TV".to_owned(),
+                    rooms: vec!["Bad".to_owned(), "Küche".to_owned()],
+                    port: 8081,
+                    grouped: true,
+                },
+            ])),
+        );
+        assert!(state.status_line.contains("2 routes"));
+        assert!(state.status_line.contains("Bad + Küche"));
+        assert_eq!(state.live.len(), 2);
+    }
+
+    #[test]
+    fn a_renamed_room_keeps_its_assignment_and_picks_up_the_new_name() {
+        let mut state = ready();
+        let _ = reduce(
+            &mut state,
+            Action::Assign {
+                row: 1,
+                destination: kitchen(),
+            },
+        );
+
+        let _ = reduce(
+            &mut state,
+            Action::RoomsDiscovered(vec![Room::new("RINCON_1", "Kochnische")]),
+        );
+        assert_eq!(
+            state.table.rows()[1].destination,
+            Destination::Room {
+                uuid: "RINCON_1".to_owned(),
+                name: "Kochnische".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_saved_routing_is_placed_once_the_outputs_are_known() {
+        use sonos_routing::{RoomsField, RouteConfig};
         let mut state = AppState {
-            bridge: BridgeStatus::Running,
+            saved_routes: vec![RouteConfig {
+                rooms: RoomsField::List(vec!["Küche".to_owned()]),
+                device: Some("LG TV".to_owned()),
+                process: None,
+                except_process: None,
+            }],
             ..AppState::default()
         };
-        let effects = reduce(&mut state, Action::Quit);
+
+        // Rooms first: nothing can be placed yet, and the routing is not lost.
+        let _ = reduce(&mut state, Action::RoomsDiscovered(rooms()));
+        assert!(state.table.is_idle());
+        assert_eq!(state.saved_routes.len(), 1);
+
+        let _ = reduce(&mut state, Action::OutputsEnumerated(outputs()));
+        assert_eq!(state.table.rows()[2].destination, kitchen());
+        assert!(state.saved_routes.is_empty(), "restored exactly once");
+    }
+
+    #[test]
+    fn a_saved_room_name_resolves_to_a_uuid_when_discovery_lands_later() {
+        use sonos_routing::{RoomsField, RouteConfig};
+        let mut state = AppState {
+            saved_routes: vec![RouteConfig {
+                rooms: RoomsField::List(vec!["Küche".to_owned()]),
+                device: None,
+                process: None,
+                except_process: None,
+            }],
+            ..AppState::default()
+        };
+
+        // Outputs arrive before any room does, so the name is all there is.
+        let _ = reduce(&mut state, Action::OutputsEnumerated(outputs()));
+        assert_eq!(
+            state.table.rows()[0].destination,
+            Destination::Room {
+                uuid: "Küche".to_owned(),
+                name: "Küche".to_owned(),
+            }
+        );
+
+        let _ = reduce(&mut state, Action::RoomsDiscovered(rooms()));
+        assert_eq!(state.table.rows()[0].destination, kitchen());
+    }
+
+    #[test]
+    fn re_enumerating_outputs_does_not_resurrect_a_restored_routing() {
+        use sonos_routing::{RoomsField, RouteConfig};
+        let mut state = AppState {
+            saved_routes: vec![RouteConfig {
+                rooms: RoomsField::Keyword("all".to_owned()),
+                device: None,
+                process: None,
+                except_process: None,
+            }],
+            ..AppState::default()
+        };
+        let _ = reduce(&mut state, Action::OutputsEnumerated(outputs()));
+        let _ = reduce(&mut state, Action::ClearRouting);
+        let _ = reduce(&mut state, Action::OutputsEnumerated(outputs()));
+        assert!(state.table.is_idle(), "the user's clear must stick");
+    }
+
+    #[test]
+    fn saving_writes_the_table_and_the_settings_together() {
+        let mut state = ready();
+        let _ = reduce(
+            &mut state,
+            Action::Assign {
+                row: 2,
+                destination: kitchen(),
+            },
+        );
+
+        let effects = reduce(&mut state, Action::Save);
+        match effects.as_slice() {
+            [Effect::Save { path, routes, .. }] => {
+                assert_eq!(path, &state.config_path);
+                assert_eq!(routes.len(), 1);
+                assert_eq!(routes[0].device.as_deref(), Some("LG TV"));
+            }
+            other => panic!("expected one save effect, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn saving_invalid_settings_is_refused() {
+        let mut state = ready();
+        state.settings.bind_address = "nope".to_owned();
+        assert!(reduce(&mut state, Action::Save).is_empty());
+        assert!(state.status_line.contains("Check the settings"));
+    }
+
+    #[test]
+    fn window_actions_map_straight_to_effects() {
+        let mut state = AppState::default();
         assert!(matches!(
-            effects.as_slice(),
-            [Effect::StopBridge, Effect::Quit]
+            reduce(&mut state, Action::ShowWindow).as_slice(),
+            [Effect::ShowWindow]
+        ));
+        assert!(matches!(
+            reduce(&mut state, Action::HideWindow).as_slice(),
+            [Effect::HideWindow]
+        ));
+        assert!(matches!(
+            reduce(&mut state, Action::Quit).as_slice(),
+            [Effect::Quit]
         ));
     }
 
     #[test]
-    fn refresh_devices_runs_once() {
-        let mut state = AppState::default();
-        let effects = reduce(&mut state, Action::RefreshDevices);
-        assert!(state.device_scan.is_running());
-        assert!(matches!(effects.as_slice(), [Effect::EnumerateDevices]));
-        // A second request while running must be a no-op.
-        assert!(reduce(&mut state, Action::RefreshDevices).is_empty());
-    }
-
-    #[test]
-    fn devices_enumerated_populates_and_clears_running() {
-        let mut state = AppState::default();
-        dispatch(&mut state, Action::RefreshDevices);
-        let effects = reduce(
+    fn an_out_of_range_assignment_is_ignored() {
+        let mut state = ready();
+        assert!(reduce(
             &mut state,
-            Action::DevicesEnumerated(vec![
-                device("id-a", "Speakers", true),
-                device("id-b", "Headphones", false),
-            ]),
-        );
-        assert!(effects.is_empty());
-        assert_eq!(state.device_scan, DeviceScan::Idle);
-        assert_eq!(state.devices.len(), 2);
-        assert!(state.status_line.contains('2'));
-    }
-
-    #[test]
-    fn device_scan_failed_is_recorded() {
-        let mut state = AppState::default();
-        dispatch(&mut state, Action::DeviceScanFailed("COM error".to_owned()));
-        assert!(matches!(state.device_scan, DeviceScan::Failed(_)));
-        assert!(state.status_line.contains("COM error"));
-    }
-
-    #[test]
-    fn select_device_writes_id_into_form() {
-        let mut state = AppState::default();
-        dispatch(
-            &mut state,
-            Action::DevicesEnumerated(vec![
-                device("id-a", "Speakers", true),
-                device("id-b", "Headphones", false),
-            ]),
-        );
-        dispatch(&mut state, Action::SelectDevice(Some(1)));
-        assert_eq!(state.form.device, "id-b");
-        // Selecting the default clears the explicit device selector.
-        dispatch(&mut state, Action::SelectDevice(None));
-        assert!(state.form.device.is_empty());
-    }
-
-    #[test]
-    fn select_device_out_of_range_selects_default() {
-        let mut state = AppState {
-            form: crate::config_form::SettingsForm {
-                device: "stale".to_owned(),
-                ..crate::config_form::SettingsForm::default()
-            },
-            ..AppState::default()
-        };
-        dispatch(&mut state, Action::SelectDevice(Some(9)));
-        assert!(state.form.device.is_empty());
+            Action::Assign {
+                row: 99,
+                destination: kitchen(),
+            }
+        )
+        .is_empty());
+        assert!(state.table.is_idle());
     }
 }

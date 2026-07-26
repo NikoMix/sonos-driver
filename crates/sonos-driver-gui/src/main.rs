@@ -1,4 +1,4 @@
-//! Binary entry point for the Sonos Driver desktop GUI.
+//! Binary entry point for the Sonos Router desktop app.
 //!
 //! Wires the headless core (`sonos_driver_gui`) to the `eframe`/`egui` shell,
 //! the system tray, and the embedded icon. The `windows` subsystem attribute
@@ -28,7 +28,7 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "Sonos Driver",
+        "Sonos Router",
         options,
         Box::new(|cc| Ok(Box::new(GuiApp::new(cc)))),
     )
@@ -46,9 +46,9 @@ fn init_tracing() {
 /// Build the main window's viewport, including the embedded icon when available.
 fn build_viewport() -> egui::ViewportBuilder {
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("Sonos Driver")
-        .with_inner_size([520.0, 640.0])
-        .with_min_inner_size([420.0, 480.0]);
+        .with_title("Sonos Router")
+        .with_inner_size([620.0, 700.0])
+        .with_min_inner_size([520.0, 480.0]);
 
     if let Some(decoded) = icon::decode() {
         viewport = viewport.with_icon(Arc::new(egui::IconData {

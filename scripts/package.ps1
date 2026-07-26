@@ -7,7 +7,7 @@
     the target machine. The zip bundles:
 
       * sonos-driver.exe       - the release CLI binary
-      * sonos-driver-gui.exe   - the system-tray desktop GUI binary
+      * sonos-router.exe   - the Sonos Router desktop app
       * README.md          - the project front door
       * CHANGELOG.md       - release notes
       * LICENSE-MIT        - MIT licence text
@@ -90,7 +90,7 @@ Write-Host "sonos-driver version: $version" -ForegroundColor Cyan
 
 # --- Build (unless skipped) --------------------------------------------------
 $cliExe = Join-Path $repoRoot 'target\release\sonos-driver.exe'
-$guiExe = Join-Path $repoRoot 'target\release\sonos-driver-gui.exe'
+$guiExe = Join-Path $repoRoot 'target\release\sonos-router.exe'
 $binaries = @($cliExe, $guiExe)
 
 if ($SkipBuild) {
@@ -140,7 +140,7 @@ New-Item -ItemType Directory -Path $stageDir -Force | Out-Null
 
 try {
     Copy-Item $cliExe (Join-Path $stageDir 'sonos-driver.exe')
-    Copy-Item $guiExe (Join-Path $stageDir 'sonos-driver-gui.exe')
+    Copy-Item $guiExe (Join-Path $stageDir 'sonos-router.exe')
     foreach ($f in $files) {
         Copy-Item $f.Src (Join-Path $stageDir $f.Name)
     }

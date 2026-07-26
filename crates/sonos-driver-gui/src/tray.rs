@@ -35,7 +35,6 @@ impl Tray {
         let start = MenuItem::new("Start streaming", true, None);
         let stop = MenuItem::new("Stop streaming", false, None);
         let quit = MenuItem::new("Quit", true, None);
-
         menu.append(&show).ok()?;
         menu.append(&hide).ok()?;
         menu.append(&PredefinedMenuItem::separator()).ok()?;
@@ -46,7 +45,7 @@ impl Tray {
 
         let mut builder = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
-            .with_tooltip("Sonos Driver");
+            .with_tooltip("Sonos Router");
         if let Some(icon) = icon {
             builder = builder.with_icon(icon);
         }
@@ -96,9 +95,9 @@ impl Tray {
         } else if id == self.hide.id() {
             Some(Action::HideWindow)
         } else if id == self.start.id() {
-            Some(Action::StartBridge)
+            Some(Action::Apply)
         } else if id == self.stop.id() {
-            Some(Action::StopBridge)
+            Some(Action::Stop)
         } else if id == self.quit.id() {
             Some(Action::Quit)
         } else {

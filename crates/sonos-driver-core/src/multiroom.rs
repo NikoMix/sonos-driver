@@ -37,6 +37,12 @@ use sonos_vad_endpoint::{AggregateBinding, Binding, PlanOptions, SystemEndpoints
 
 use crate::{Arbiter, Bridge, SessionId, StopHandle};
 
+/// How often the stop relay checks whether the supervisor has been stopped.
+///
+/// Short enough that pressing Stop feels immediate, long enough that a poller
+/// running for the whole session costs nothing measurable.
+const STOP_RELAY_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
 /// What a session's audio is sent to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionTarget {
@@ -380,10 +386,17 @@ impl MultiRoomBridge {
         let start = Arc::new(start);
         let failures = Arc::new(Mutex::new(Vec::<String>::new()));
         let mut handles = Vec::with_capacity(sessions.len());
+        let mut session_stops = Vec::with_capacity(sessions.len());
 
         for session in sessions {
             let config = session.config(&self.config);
-            let stop = Arc::clone(&self.stop);
+            // Each session gets its *own* flag rather than the supervisor's.
+            // A session sets its flag as part of its normal teardown, so
+            // sharing one flag would let the first room to finish — or fail —
+            // silently cancel every other room and, worse, latch the caller's
+            // stop handle so its retry loop never runs again.
+            let stop = Arc::new(AtomicBool::new(false));
+            session_stops.push(Arc::clone(&stop));
             let start = Arc::clone(&start);
             let failures = Arc::clone(&failures);
             let label = format!("{} -> {}", session.device_name, session.room_name);
@@ -414,6 +427,7 @@ impl MultiRoomBridge {
         }
 
         let started = handles.len();
+        let relay = self.spawn_stop_relay(session_stops);
         for handle in handles {
             // A panicking room must not take the supervisor down; the thread's
             // own error path has already logged whatever it knew.
@@ -421,6 +435,7 @@ impl MultiRoomBridge {
                 tracing::error!("a room bridge thread panicked");
             }
         }
+        relay.shutdown();
 
         // A poisoned mutex means a room panicked while holding it; treat that as
         // "everything failed" rather than silently reporting success.
@@ -441,6 +456,53 @@ impl MultiRoomBridge {
     #[must_use]
     pub fn is_stop_requested(&self) -> bool {
         self.stop.load(Ordering::SeqCst)
+    }
+
+    /// Relay a stop request from the supervisor's flag to each session's own.
+    ///
+    /// The sessions no longer share the supervisor's flag, so an external stop
+    /// has to be carried inward. One poller does that for all of them, which is
+    /// cheap next to the per-room capture and encode threads it is stopping.
+    fn spawn_stop_relay(&self, sessions: Vec<Arc<AtomicBool>>) -> StopRelay {
+        let supervisor = Arc::clone(&self.stop);
+        let finished = Arc::new(AtomicBool::new(false));
+        let done = Arc::clone(&finished);
+
+        let handle = thread::Builder::new()
+            .name("sonos-stop-relay".to_owned())
+            .spawn(move || {
+                while !done.load(Ordering::SeqCst) {
+                    if supervisor.load(Ordering::SeqCst) {
+                        for session in &sessions {
+                            session.store(true, Ordering::SeqCst);
+                        }
+                        return;
+                    }
+                    thread::sleep(STOP_RELAY_POLL);
+                }
+            })
+            .ok();
+
+        StopRelay { finished, handle }
+    }
+}
+
+/// Handle to the thread that carries a stop request into the sessions.
+///
+/// Held so the poller can be wound down as soon as the rooms have finished
+/// rather than lingering for its full poll interval.
+struct StopRelay {
+    finished: Arc<AtomicBool>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl StopRelay {
+    /// Stop polling and wait for the thread to end.
+    fn shutdown(self) {
+        self.finished.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -594,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn every_room_gets_its_own_bridge_and_stop_is_shared() {
+    fn every_room_gets_its_own_bridge_and_its_own_stop_flag() {
         let supervisor_config = Config::default();
         let mut supervisor = MultiRoomBridge::new(supervisor_config);
         let sessions = supervisor
@@ -603,11 +665,16 @@ mod tests {
 
         let seen = Arc::new(Mutex::new(BTreeMap::<u16, String>::new()));
         let recorder = Arc::clone(&seen);
+        let flags = Arc::new(Mutex::new(Vec::<Arc<AtomicBool>>::new()));
+        let collector = Arc::clone(&flags);
 
         supervisor
             .run_sessions_with(&sessions, move |_session, config, stop| {
-                // Every session must observe the supervisor's shared stop flag.
                 assert!(!stop.load(Ordering::SeqCst));
+                collector.lock().expect("lock").push(Arc::clone(&stop));
+                // Tearing this session down must not reach any other session:
+                // this is exactly what a real bridge does when it finishes.
+                stop.store(true, Ordering::SeqCst);
                 recorder.lock().expect("lock").insert(
                     config.stream.port,
                     config.capture.device.clone().unwrap_or_default(),
@@ -619,6 +686,52 @@ mod tests {
         let seen = seen.lock().expect("lock");
         assert_eq!(seen.len(), 2);
         assert!(seen.values().all(|id| id.contains("slot-")));
+
+        let flags = flags.lock().expect("lock");
+        assert_eq!(flags.len(), 2);
+        assert!(
+            !Arc::ptr_eq(&flags[0], &flags[1]),
+            "sessions must not share one stop flag"
+        );
+        assert!(
+            !supervisor.is_stop_requested(),
+            "a session finishing must not latch the supervisor's stop flag, or \
+             the caller's retry loop would never run again"
+        );
+    }
+
+    #[test]
+    fn an_external_stop_still_reaches_every_session() {
+        use std::time::{Duration, Instant};
+
+        let mut supervisor = MultiRoomBridge::new(Config::default());
+        let sessions = supervisor
+            .plan(&FakeEndpoints::with_slots(4), &rooms())
+            .expect("plan");
+
+        let handle = StopHandle::new();
+        supervisor.adopt_stop_handle(&handle);
+
+        // Stop while the sessions are blocked, the way a user pressing Stop or
+        // a service shutdown does.
+        let stopper = handle.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(120));
+            stopper.stop();
+        });
+
+        let started = Instant::now();
+        supervisor
+            .run_sessions_with(&sessions, move |_session, _config, stop| {
+                while !stop.load(Ordering::SeqCst) {
+                    if started.elapsed() > Duration::from_secs(10) {
+                        return Err(Error::control("the stop never arrived"));
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Ok(())
+            })
+            .expect("every session observed the stop and ended cleanly");
     }
 
     #[test]

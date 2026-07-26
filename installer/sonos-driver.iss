@@ -51,17 +51,17 @@ ArchitecturesInstallIn64BitMode=x64
 MinVersion=10.0
 WizardStyle=modern
 UninstallDisplayName=sonos-driver {#AppVersion}
-UninstallDisplayIcon={app}\sonos-driver-gui.exe
+UninstallDisplayIcon={app}\sonos-router.exe
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "Create a &desktop shortcut for the tray GUI"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
+Name: "desktopicon"; Description: "Create a &desktop shortcut for Sonos Router"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
 [Files]
 Source: "{#PayloadDir}\sonos-driver.exe";     DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\sonos-driver-gui.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PayloadDir}\sonos-router.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\README.md";            DestDir: "{app}"; Flags: ignoreversion isreadme
 Source: "{#PayloadDir}\CHANGELOG.md";         DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\LICENSE-MIT";          DestDir: "{app}"; Flags: ignoreversion
@@ -71,10 +71,10 @@ Source: "{#PayloadDir}\LICENSE-APACHE";       DestDir: "{app}"; Flags: ignorever
 Source: "{#PayloadDir}\sonos-driver.toml";    DestDir: "{app}"; DestName: "sonos-driver.example.toml"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\sonos-driver (tray GUI)"; Filename: "{app}\sonos-driver-gui.exe"; WorkingDir: "{app}"
+Name: "{group}\Sonos Router"; Filename: "{app}\sonos-router.exe"; WorkingDir: "{app}"
 Name: "{group}\Example configuration";   Filename: "{app}\sonos-driver.example.toml"
 Name: "{group}\{cm:UninstallProgram,sonos-driver}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\sonos-driver";      Filename: "{app}\sonos-driver-gui.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autodesktop}\Sonos Router";     Filename: "{app}\sonos-router.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\sonos-driver-gui.exe"; Description: "{cm:LaunchProgram,sonos-driver}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\sonos-router.exe"; Description: "{cm:LaunchProgram,Sonos Router}"; Flags: nowait postinstall skipifsilent

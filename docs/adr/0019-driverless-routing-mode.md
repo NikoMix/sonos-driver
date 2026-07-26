@@ -167,7 +167,10 @@ wants audio in the kitchen this afternoon does not have to.
 - `sonos-driver-gui` keeps a purpose. It is a room picker with start/stop, which
   is precisely a driverless front end, so it stays as an optional convenience
   rather than being retired. It is still not part of the driver product, which
-  remains GUI-free by requirement.
+  remains GUI-free by requirement. *(Superseded by
+  [ADR-0020](./0020-runtime-routing-app.md): it was subsequently rebuilt as
+  **Sonos Router**, the primary interface to this mode rather than an optional
+  convenience. The driver product remains GUI-free.)*
 - Two service binaries can now be installed. They must not both drive the same
   room; the party journal and the arbiter are per-process, so cross-process
   arbitration does **not** exist. This is documented rather than engineered
