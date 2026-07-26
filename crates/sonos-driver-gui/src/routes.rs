@@ -291,6 +291,32 @@ impl RoutingTable {
                 });
             }
         }
+
+        // Routing a sonosvad endpoint means this app captures audio that the
+        // driver's own service is very likely already capturing and sending to
+        // the same household. It is not wrong to do deliberately with the
+        // service stopped, so this informs rather than blocks.
+        let virtual_rows: Vec<usize> = self
+            .routed()
+            .filter(|(_, row)| row.output.is_sonos_virtual())
+            .map(|(index, _)| index)
+            .collect();
+        if !virtual_rows.is_empty() {
+            let names: Vec<&str> = virtual_rows
+                .iter()
+                .map(|&index| self.rows[index].output.name.as_str())
+                .collect();
+            warnings.push(Warning {
+                rows: virtual_rows,
+                message: format!(
+                    "{} already belong(s) to the sonosvad driver, which streams to Sonos by \
+                     itself. Routing it here as well sends the same audio twice unless the \
+                     sonosvad service is stopped.",
+                    names.join(", ")
+                ),
+            });
+        }
+
         warnings
     }
 
@@ -424,8 +450,8 @@ mod tests {
 
     fn outputs() -> Vec<Output> {
         vec![
-            Output::new("{0.0.0}.speakers", "Speakers (Realtek)", true),
-            Output::new("{0.0.0}.hdmi", "LG TV (NVIDIA HDMI)", false),
+            Output::new("{0.0.0}.speakers", "Speakers (Realtek)", "", true),
+            Output::new("{0.0.0}.hdmi", "LG TV (NVIDIA HDMI)", "", false),
         ]
     }
 
@@ -440,6 +466,70 @@ mod tests {
         let mut table = RoutingTable::new();
         table.sync_outputs(outputs());
         table
+    }
+
+    #[test]
+    fn routing_a_sonosvad_endpoint_warns_about_streaming_it_twice() {
+        use crate::state::SONOSVAD_ADAPTER;
+
+        let mut table = RoutingTable::new();
+        table.sync_outputs(vec![
+            Output::new("{0.0.0}.speakers", "Speakers (Realtek)", "", true),
+            // What the driver's endpoints look like once sonosvad-svc has
+            // renamed them: the name is a room, so only the adapter gives it
+            // away.
+            Output::new("{0.0.0}.vad1", "Wohnzimmer", SONOSVAD_ADAPTER, false),
+        ]);
+        let rooms = rooms();
+
+        // A plain output is unremarkable.
+        table.assign(1, to_room(&rooms[0]));
+        assert!(
+            table.warnings().is_empty(),
+            "an ordinary output should not warn"
+        );
+
+        table.assign(2, to_room(&rooms[1]));
+        let warnings = table.warnings();
+        assert_eq!(warnings.len(), 1, "the sonosvad row should warn");
+        assert_eq!(warnings[0].rows, vec![2]);
+        assert!(
+            warnings[0].message.contains("Wohnzimmer"),
+            "the warning should name the output: {}",
+            warnings[0].message
+        );
+        assert!(
+            warnings[0].message.contains("twice"),
+            "the warning should say what goes wrong: {}",
+            warnings[0].message
+        );
+
+        // Unrouting it clears the warning: the endpoint existing is fine, it is
+        // routing it from here that is the surprise.
+        table.assign(2, Destination::Off);
+        assert!(table.warnings().is_empty());
+    }
+
+    #[test]
+    fn an_endpoint_with_an_unknown_adapter_is_not_treated_as_sonosvad() {
+        // Property reads can fail; an empty adapter must never match, or every
+        // such endpoint would warn.
+        let output = Output::new("{0.0.0}.x", "Something", "", false);
+        assert!(!output.is_sonos_virtual());
+
+        // Observed on a real machine: the Remote Desktop endpoint reports a
+        // single space, which is "unknown" too.
+        let blank = Output::new("{0.0.0}.rdp", "Remote Audio", " ", false);
+        assert!(!blank.is_sonos_virtual());
+
+        // Whitespace around a genuine match still matches.
+        let padded = Output::new(
+            "{0.0.0}.vad",
+            "Bad",
+            format!("  {} ", crate::state::SONOSVAD_ADAPTER),
+            false,
+        );
+        assert!(padded.is_sonos_virtual());
     }
 
     fn to_room(room: &Room) -> Destination {

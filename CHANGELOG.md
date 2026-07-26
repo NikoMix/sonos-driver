@@ -120,6 +120,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     or installed in CI — it requires the full WDK and a reboot for test-signing.
     ([#44](https://github.com/NikoMix/sonos-driver/issues/44),
     [#45](https://github.com/NikoMix/sonos-driver/issues/45))
+- **The app now recognises endpoints published by the `sonosvad` driver and says
+  so.** With both modes installed, the driver's endpoints appear in the app's
+  output list looking like ordinary outputs — `sonosvad-svc` renames them to room
+  names, so nothing about the name gives them away. Routing one from the app then
+  sends the same audio to the same household twice. Endpoints now carry the
+  adapter that produced them (`EndpointInfo::adapter`, read from
+  `PKEY_DeviceInterface_FriendlyName`), which is the one property a user cannot
+  rename, and routing such an endpoint raises a warning rather than a block —
+  doing it deliberately with the service stopped is legitimate.
+  ([#49](https://github.com/NikoMix/sonos-driver/issues/49))
+- **`driver/scripts/Setup-Driver.ps1` — the whole driver setup in one command.**
+  Secure Boot check, build, certificate, sign, enable test signing, build the
+  services, install, verify. It is convergent rather than a batch file: every step
+  reads the machine's actual state first, so re-running after an interruption
+  resumes instead of repeating, and running it on a working machine just
+  re-verifies. The reboot that `bcdedit /set testsigning on` needs is a real
+  boundary no script can remove, so it stops there with the reason and the exact
+  command to resume, and remembers that it was the one to enable test signing —
+  which is how it can tell "configured but not yet rebooted" from "active", a
+  distinction `bcdedit` cannot make on its own since it reports the value stored
+  for the *next* boot. `-WhatIfOnly` reports how far along a machine is without
+  touching it. It refuses to run from a release payload, where there is no source
+  to build and the package is already signed.
+  ([#49](https://github.com/NikoMix/sonos-driver/issues/49))
 
 ### Changed
 
@@ -163,6 +187,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A driver package built with `-IncludeDriver` could only be installed on the
+  machine that signed it.** The payload shipped the signed `.sys`/`.cat` but not
+  the public certificate they were signed with, so on any other machine `pnputil`
+  rejected the catalogue with "third-party INF does not contain digital signature
+  information" — a message that mentions neither certificates nor what to do about
+  it. The signer certificate is now exported from the signature itself (so it is by
+  construction the right one, rather than whatever happens to be in `driver\_local`)
+  and bundled as `driver\SonosVAD-TestCert.cer`, with `INSTALL.md` walking through
+  trusting it and spelling out what that trust means. Packaging fails if the
+  certificate cannot be read, rather than producing a package that installs nowhere.
 - **A failed route now actually retries instead of silently giving up.** Every
   multi-room session was handed the *caller's* cancellation flag, and session
   teardown sets that flag — so the first room to finish or fail latched the

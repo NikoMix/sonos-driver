@@ -62,11 +62,23 @@ fn run(args: &Args) -> Result<(), String> {
         } else {
             ""
         };
-        println!("  {}{marker}", endpoint.name);
+        let adapter = if endpoint.adapter.is_empty() {
+            "<adapter unknown>".to_owned()
+        } else {
+            format!("[{}]", endpoint.adapter)
+        };
+        println!("  {} {adapter}{marker}", endpoint.name);
     }
     let outputs: Vec<Output> = endpoints
         .into_iter()
-        .map(|endpoint| Output::new(endpoint.id, endpoint.name, endpoint.is_default))
+        .map(|endpoint| {
+            Output::new(
+                endpoint.id,
+                endpoint.name,
+                endpoint.adapter,
+                endpoint.is_default,
+            )
+        })
         .collect();
     drive(
         &mut state,

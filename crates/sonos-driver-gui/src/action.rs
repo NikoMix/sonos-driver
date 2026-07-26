@@ -461,8 +461,8 @@ mod tests {
 
     fn outputs() -> Vec<Output> {
         vec![
-            Output::new("id-speakers", "Speakers", true),
-            Output::new("id-hdmi", "LG TV", false),
+            Output::new("id-speakers", "Speakers", "", true),
+            Output::new("id-hdmi", "LG TV", "", false),
         ]
     }
 

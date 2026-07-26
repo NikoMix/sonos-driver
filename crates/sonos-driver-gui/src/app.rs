@@ -177,7 +177,12 @@ impl GuiApp {
                         endpoints
                             .into_iter()
                             .map(|endpoint| {
-                                Output::new(endpoint.id, endpoint.name, endpoint.is_default)
+                                Output::new(
+                                    endpoint.id,
+                                    endpoint.name,
+                                    endpoint.adapter,
+                                    endpoint.is_default,
+                                )
                             })
                             .collect(),
                     ),

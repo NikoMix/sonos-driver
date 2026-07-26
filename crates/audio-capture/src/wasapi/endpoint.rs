@@ -9,7 +9,10 @@ use core::ffi::c_void;
 
 use audio_core::{AudioFormat, Error, Result};
 use windows::core::PWSTR;
-use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
+use windows::Win32::Devices::FunctionDiscovery::{
+    PKEY_DeviceInterface_FriendlyName, PKEY_Device_FriendlyName,
+};
+use windows::Win32::Foundation::PROPERTYKEY;
 use windows::Win32::Media::Audio::{
     eConsole, eRender, IAudioClient, IMMDevice, IMMDeviceCollection, IMMDeviceEnumerator,
     MMDeviceEnumerator, DEVICE_STATE_ACTIVE, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
@@ -55,8 +58,9 @@ pub(super) fn enumerate(enumerator: &IMMDeviceEnumerator) -> Result<Vec<Endpoint
         let device = unsafe { collection.Item(index) }.map_err(|e| super::win_err("Item", &e))?;
         let id = device_id(&device)?;
         let name = friendly_name(&device).unwrap_or_else(|_| id.clone());
+        let adapter = adapter_name(&device);
         let is_default = default_id.as_deref() == Some(id.as_str());
-        endpoints.push(EndpointInfo::new(id, name, is_default));
+        endpoints.push(EndpointInfo::new(id, name, adapter, is_default));
     }
     Ok(endpoints)
 }
@@ -143,17 +147,47 @@ fn device_id(device: &IMMDevice) -> Result<String> {
 
 /// Read an endpoint's friendly name via its property store.
 fn friendly_name(device: &IMMDevice) -> Result<String> {
+    string_property(device, &PKEY_Device_FriendlyName, "FriendlyName")
+        .ok_or_else(|| Error::capture("endpoint has no friendly name"))
+}
+
+/// Read the adapter (device interface) name this endpoint belongs to.
+///
+/// Returns an empty string when unavailable. A missing adapter name is not worth
+/// failing enumeration over — it is used to recognise our own driver's endpoints,
+/// and "unknown" is correctly handled as "not ours".
+///
+/// The value is trimmed because Windows really does report blank-but-present
+/// names: the Remote Desktop "Remote Audio" endpoint reports a single space.
+/// Left untrimmed that reads as a known adapter called `" "`, which would defeat
+/// the emptiness checks downstream and show as `[ ]` in any UI.
+fn adapter_name(device: &IMMDevice) -> String {
+    string_property(
+        device,
+        &PKEY_DeviceInterface_FriendlyName,
+        "DeviceInterface_FriendlyName",
+    )
+    .map(|name| name.trim().to_owned())
+    .unwrap_or_default()
+}
+
+/// Read one string property from a device's property store.
+fn string_property(device: &IMMDevice, key: &PROPERTYKEY, label: &str) -> Option<String> {
     // SAFETY: opens a read-only property store on a live device.
-    let store = unsafe { device.OpenPropertyStore(STGM_READ) }
-        .map_err(|e| super::win_err("OpenPropertyStore", &e))?;
-    // SAFETY: `PKEY_Device_FriendlyName` is a valid key; returns an owned
-    // PROPVARIANT we clear below.
-    let mut prop = unsafe { store.GetValue(&PKEY_Device_FriendlyName) }
-        .map_err(|e| super::win_err("GetValue(FriendlyName)", &e))?;
+    let store = unsafe { device.OpenPropertyStore(STGM_READ) }.ok()?;
+    // SAFETY: `key` is a valid property key; returns an owned PROPVARIANT we
+    // clear below.
+    let mut prop = match unsafe { store.GetValue(key) } {
+        Ok(prop) => prop,
+        Err(err) => {
+            tracing::debug!(%err, property = label, "endpoint property is unreadable");
+            return None;
+        }
+    };
 
     // SAFETY: reading the PROPVARIANT discriminant and, when it is `VT_LPWSTR`,
     // its wide-string member; both are the active union fields for this key.
-    let name = unsafe {
+    let value = unsafe {
         if prop.Anonymous.Anonymous.vt == VT_LPWSTR {
             let pwsz = prop.Anonymous.Anonymous.Anonymous.pwszVal;
             if pwsz.is_null() {
@@ -171,7 +205,7 @@ fn friendly_name(device: &IMMDevice) -> Result<String> {
         let _ = PropVariantClear(&raw mut prop);
     }
 
-    name.ok_or_else(|| Error::capture("endpoint has no friendly name"))
+    value
 }
 
 /// Encode a Rust string as a NUL-terminated UTF-16 buffer for Win32 calls.

@@ -25,19 +25,55 @@ pub struct Output {
     pub id: String,
     /// Human-friendly endpoint name, e.g. `Speakers (Realtek(R) Audio)`.
     pub name: String,
+    /// The adapter behind this endpoint, e.g. `Realtek(R) Audio`.
+    ///
+    /// Used to recognise endpoints published by our own kernel driver, which
+    /// the endpoint *name* cannot do: `sonosvad-svc` renames them to room
+    /// names, and a user may rename any endpoint to anything at all.
+    pub adapter: String,
     /// Whether Windows currently plays new audio here by default.
     pub is_default_endpoint: bool,
 }
 
+/// The adapter name the `sonosvad` driver publishes its endpoints under.
+///
+/// Declared by `DeviceDesc` in `driver/sonosvad/Source/Main/sonosvad.inx` and
+/// duplicated here rather than imported: the driverless app deliberately does
+/// not depend on the kernel-driver crates (ADR-0019), and this is one short
+/// string on the far side of that boundary. `sonos-vad-endpoint` owns the
+/// authoritative copy.
+pub const SONOSVAD_ADAPTER: &str = "Sonos Virtual Audio Device";
+
 impl Output {
     /// Describe a real render endpoint.
     #[must_use]
-    pub fn new(id: impl Into<String>, name: impl Into<String>, is_default: bool) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        adapter: impl Into<String>,
+        is_default: bool,
+    ) -> Self {
         Self {
             id: id.into(),
             name: name.into(),
+            adapter: adapter.into(),
             is_default_endpoint: is_default,
         }
+    }
+
+    /// Whether this output is an endpoint published by the `sonosvad` driver.
+    ///
+    /// Such an endpoint is already a Sonos room as far as Windows is concerned.
+    /// Routing it again from this app means its audio is captured and sent to a
+    /// room twice over if `sonosvad-svc` is also running — worth saying out
+    /// loud, but not worth forbidding, since the service may be stopped.
+    ///
+    /// A blank adapter is "unknown", never a match; Windows reports a single
+    /// space for some endpoints, so blank is checked rather than empty.
+    #[must_use]
+    pub fn is_sonos_virtual(&self) -> bool {
+        let adapter = self.adapter.trim();
+        !adapter.is_empty() && adapter.eq_ignore_ascii_case(SONOSVAD_ADAPTER)
     }
 
     /// The synthetic row that always tracks whatever Windows calls the default.
@@ -46,6 +82,7 @@ impl Output {
         Self {
             id: DEFAULT_OUTPUT_ID.to_owned(),
             name: "Default output".to_owned(),
+            adapter: String::new(),
             is_default_endpoint: false,
         }
     }
@@ -268,7 +305,7 @@ mod tests {
 
     #[test]
     fn a_real_endpoint_captures_itself_by_id() {
-        let output = Output::new("{0.0.0}.abc", "Speakers", true);
+        let output = Output::new("{0.0.0}.abc", "Speakers", "", true);
         assert!(!output.is_follower());
         assert_eq!(output.source(), Source::Device("{0.0.0}.abc".to_owned()));
         assert_eq!(output.config_selector().as_deref(), Some("Speakers"));
@@ -323,8 +360,8 @@ mod tests {
     fn a_conflicting_table_cannot_be_started() {
         let mut state = AppState::default();
         state.table.sync_outputs(vec![
-            Output::new("a", "A", true),
-            Output::new("b", "B", false),
+            Output::new("a", "A", "", true),
+            Output::new("b", "B", "", false),
         ]);
         let kitchen = Destination::Room {
             uuid: "RINCON_1".to_owned(),

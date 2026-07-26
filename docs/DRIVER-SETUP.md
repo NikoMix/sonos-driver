@@ -52,6 +52,35 @@ changed in Microsoft's MS-PL `simpleaudiosample` to produce it.
 From an **elevated** PowerShell at the repo root:
 
 ```powershell
+./driver/scripts/Setup-Driver.ps1
+```
+
+That is the whole thing. It checks Secure Boot, builds, creates and trusts a test
+certificate, signs, enables test signing, builds the services, installs the driver
+and its device node, and verifies the result.
+
+**It will stop once and ask you to reboot.** `bcdedit /set testsigning on` only
+takes effect at boot and the driver cannot load before it does, so no script can
+avoid that boundary. Re-run the same command afterwards and it picks up where it
+left off — every step checks the machine's real state first, so re-running is
+always safe and never repeats work that is already done.
+
+```powershell
+./driver/scripts/Setup-Driver.ps1 -WhatIfOnly              # report state, change nothing
+./driver/scripts/Setup-Driver.ps1 -SeedHost 192.168.1.50   # if SSDP multicast is blocked
+./driver/scripts/Setup-Driver.ps1 -SkipBuild               # install what is already built
+```
+
+Undo it with `./driver/scripts/Uninstall-Driver.ps1`, then
+`./driver/scripts/Disable-TestSigning.ps1` and a reboot.
+
+### Doing it by hand
+
+The individual scripts remain, and the rest of this document explains each one.
+Use them when something has gone wrong and you need to run a single step, or when
+you want to see exactly what is happening:
+
+```powershell
 ./driver/scripts/Enable-TestSigning.ps1     # then REBOOT
 ./driver/scripts/New-TestCert.ps1
 ./driver/scripts/Build-Driver.ps1

@@ -178,6 +178,19 @@ if ($IncludeDriver) {
     }
     Write-Host "Driver signature status: $($sig.Status)" -ForegroundColor Cyan
 
+    # A test-signed driver is trusted only where its certificate is trusted, so a
+    # payload without the public .cer installs on exactly one machine: the one that
+    # signed it. Everywhere else pnputil rejects the catalogue with "third-party INF
+    # does not contain digital signature information", which names neither the cause
+    # nor the fix. Take the certificate from the signature itself rather than from
+    # driver\_local, so it is by construction the one that signed this binary.
+    $signerCert = $sig.SignerCertificate
+    if (-not $signerCert) {
+        throw ('sonosvad.sys is signed but no signer certificate could be read, so the ' +
+               'public certificate cannot be bundled and the payload would be installable ' +
+               'only on the signing machine.')
+    }
+
     $driverScripts = @(Get-ChildItem (Join-Path $repoRoot 'driver\scripts') -Filter '*.ps1' -File)
     if ($driverScripts.Count -eq 0) {
         throw 'No install scripts found under driver\scripts.'
@@ -228,6 +241,10 @@ try {
             Copy-Item $driverReadme (Join-Path $driverDir 'README.md')
         }
 
+        $cerPath = Join-Path $driverDir 'SonosVAD-TestCert.cer'
+        Export-Certificate -Cert $signerCert -FilePath $cerPath -Type CERT | Out-Null
+        Write-Host "Bundled the signing certificate: $($signerCert.Subject)" -ForegroundColor Cyan
+
         # The payload's layout is flat, not the repo's build-output tree, so the
         # scripts need explicit paths. Spell them out rather than making the reader
         # work it out from a script's -InfPath default.
@@ -243,9 +260,18 @@ From an **elevated** PowerShell prompt, in this file's parent folder (the one
 containing sonos-router.exe):
 
 ```powershell
-.\driver\scripts\Enable-TestSigning.ps1          # reboots the machine
+# 1. Trust the certificate this driver was signed with. Without this, step 3
+#    fails with "third-party INF does not contain digital signature information",
+#    which does not mention certificates at all.
+Import-Certificate -FilePath .\driver\SonosVAD-TestCert.cer `
+    -CertStoreLocation Cert:\LocalMachine\Root
+Import-Certificate -FilePath .\driver\SonosVAD-TestCert.cer `
+    -CertStoreLocation Cert:\LocalMachine\TrustedPublisher
 
-# after the reboot, back in the same folder:
+# 2. Turn on test signing, then REBOOT.
+.\driver\scripts\Enable-TestSigning.ps1
+
+# 3. After the reboot, back in the same folder:
 .\driver\scripts\Install-Driver.ps1 `
     -InfPath    .\driver\sonosvad.inf `
     -ServiceExe .\sonosvad-svc.exe
@@ -256,6 +282,15 @@ Add `-SeedHost <ip-of-any-sonos-player>` to Install-Driver.ps1 if your network
 blocks SSDP multicast and discovery finds nothing.
 
 Your rooms then appear in **Settings > System > Sound**, plus **All Sonos**.
+
+> Step 1 asks you to trust a self-signed certificate machine-wide, which lets
+> anything signed with that key load as a driver. It is the same key the release
+> was built with, held by whoever produced this package. If you do not want to
+> extend that trust, build and sign the driver yourself from the repository -
+> `driver\scripts\Setup-Driver.ps1` does the whole thing with your own key.
+
+`Setup-Driver.ps1` in `driver\scripts` needs the source tree and will refuse to
+run here; it is for building from a clone, not for installing this package.
 
 ## Checking the package before you trust it
 

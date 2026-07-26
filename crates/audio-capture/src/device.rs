@@ -14,6 +14,16 @@ pub struct EndpointInfo {
     pub id: String,
     /// Human-friendly name, e.g. `Speakers (Realtek(R) Audio)`.
     pub name: String,
+    /// The adapter this endpoint belongs to, e.g. `Realtek(R) Audio`.
+    ///
+    /// This is the part Windows shows in parentheses: the *device* behind the
+    /// endpoint, rather than the endpoint itself. It identifies which driver
+    /// produced the endpoint, which endpoint names cannot — a user is free to
+    /// rename any endpoint to anything, including something misleading.
+    ///
+    /// Empty when the property cannot be read; treat that as "unknown", never
+    /// as a match.
+    pub adapter: String,
     /// Whether this endpoint is the current default render device.
     pub is_default: bool,
 }
@@ -21,12 +31,30 @@ pub struct EndpointInfo {
 impl EndpointInfo {
     /// Construct an endpoint descriptor.
     #[must_use]
-    pub(crate) fn new(id: impl Into<String>, name: impl Into<String>, is_default: bool) -> Self {
+    pub(crate) fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        adapter: impl Into<String>,
+        is_default: bool,
+    ) -> Self {
         Self {
             id: id.into(),
             name: name.into(),
+            adapter: adapter.into(),
             is_default,
         }
+    }
+
+    /// Whether this endpoint is produced by the named adapter.
+    ///
+    /// An empty or blank [`adapter`](Self::adapter) never matches: not knowing
+    /// which driver produced an endpoint is different from knowing it is this
+    /// one. Blank rather than merely empty because Windows reports a single
+    /// space for some endpoints (Remote Desktop's "Remote Audio" does).
+    #[must_use]
+    pub fn is_from_adapter(&self, adapter: &str) -> bool {
+        let mine = self.adapter.trim();
+        !mine.is_empty() && mine.eq_ignore_ascii_case(adapter.trim())
     }
 }
 
@@ -86,9 +114,24 @@ mod tests {
 
     fn endpoints() -> Vec<EndpointInfo> {
         vec![
-            EndpointInfo::new("{0.0.0.00000000}.{aaaa}", "Speakers (Realtek Audio)", false),
-            EndpointInfo::new("{0.0.0.00000000}.{bbbb}", "Headphones (USB DAC)", true),
-            EndpointInfo::new("{0.0.0.00000000}.{cccc}", "Digital Output (HDMI)", false),
+            EndpointInfo::new(
+                "{0.0.0.00000000}.{aaaa}",
+                "Speakers (Realtek Audio)",
+                "Realtek Audio",
+                false,
+            ),
+            EndpointInfo::new(
+                "{0.0.0.00000000}.{bbbb}",
+                "Headphones (USB DAC)",
+                "USB DAC",
+                true,
+            ),
+            EndpointInfo::new(
+                "{0.0.0.00000000}.{cccc}",
+                "Digital Output (HDMI)",
+                "HDMI Audio",
+                false,
+            ),
         ]
     }
 
@@ -135,11 +178,42 @@ mod tests {
         // A selector that is simultaneously a valid id and a name fragment must
         // resolve via the id.
         let list = vec![
-            EndpointInfo::new("Headphones", "Speakers (Realtek Audio)", false),
-            EndpointInfo::new("{0.0.0.00000000}.{bbbb}", "Headphones (USB DAC)", true),
+            EndpointInfo::new(
+                "Headphones",
+                "Speakers (Realtek Audio)",
+                "Realtek Audio",
+                false,
+            ),
+            EndpointInfo::new(
+                "{0.0.0.00000000}.{bbbb}",
+                "Headphones (USB DAC)",
+                "USB DAC",
+                true,
+            ),
         ];
         let chosen = select(&list, Some("Headphones")).expect("resolves");
         assert_eq!(chosen.id, "Headphones");
+    }
+
+    #[test]
+    fn adapter_matching_ignores_case_but_not_emptiness() {
+        let list = endpoints();
+        assert!(list[0].is_from_adapter("realtek audio"));
+        assert!(!list[0].is_from_adapter("USB DAC"));
+
+        // An endpoint whose adapter could not be read must not match anything,
+        // or a filter keyed on the adapter would silently capture every
+        // endpoint the property read failed for.
+        let unknown = EndpointInfo::new("id", "Some Output", "", false);
+        assert!(!unknown.is_from_adapter(""));
+        assert!(!unknown.is_from_adapter("Sonos Virtual Audio Device"));
+
+        // Windows reports a single space for some endpoints -- Remote Desktop's
+        // "Remote Audio" does -- so blank must be treated as unknown, not as an
+        // adapter literally named " ".
+        let blank = EndpointInfo::new("id", "Remote Audio", "   ", false);
+        assert!(!blank.is_from_adapter("   "));
+        assert!(!blank.is_from_adapter("Sonos Virtual Audio Device"));
     }
 
     #[test]
