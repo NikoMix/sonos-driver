@@ -115,23 +115,18 @@ pub(crate) fn run(settings: &WorkerSettings, stop: &StopHandle) {
 
 /// One full plan-and-stream cycle.
 fn run_once(settings: &WorkerSettings, stop: &StopHandle) -> anyhow::Result<()> {
-    let config = load_config(settings)?;
-    let seed = settings
-        .seed_host
-        .as_deref()
-        .or(config.sonos.seed_host.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
+    let mut config = load_config(settings)?;
+    let seed = sonos_driver_core::apply_seed_host(settings.seed_host.as_deref(), &mut config);
 
     tracing::info!(seed = ?seed, "discovering Sonos household");
-    let rooms =
-        discover_rooms(seed, settings.discovery_timeout).context("discovering Sonos rooms")?;
+    let rooms = discover_rooms(seed.as_deref(), settings.discovery_timeout)
+        .context("discovering Sonos rooms")?;
     tracing::info!(rooms = rooms.len(), "discovered rooms");
 
     // A previous run that was killed mid-party left the household grouped.
     // Split it before planning, so the service always starts from the
     // topology the user configured rather than inheriting one it made.
-    recover_stale_group(seed, settings.discovery_timeout);
+    recover_stale_group(seed.as_deref(), settings.discovery_timeout);
 
     let mut supervisor = MultiRoomBridge::new(config);
     // Adopt the caller's stop flag so a SCM stop reaches the bridges.
