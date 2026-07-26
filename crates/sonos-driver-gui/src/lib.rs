@@ -41,6 +41,8 @@
 //!   the routing table, and what the worker is doing.
 //! * [`routes`] is the routing table itself — assignment, validation, and
 //!   conversion to the routes the streaming worker runs.
+//! * [`driver_status`] reports whether the optional kernel-driver mode is
+//!   installed, so the app can say when the two overlap.
 //! * [`action`] defines [`Action`]/[`Effect`] and the pure [`reduce`] function.
 //! * [`config_form`] converts between the editable settings and the typed
 //!   [`audio_core::Config`]; [`config_io`] persists both halves as one
@@ -55,11 +57,13 @@ pub mod cast;
 pub mod config_form;
 pub mod config_io;
 pub mod discovery;
+pub mod driver_status;
 pub mod routes;
 pub mod state;
 
 pub use action::{reduce, Action, Effect};
 pub use cast::CastSupervisor;
 pub use config_form::SettingsForm;
+pub use driver_status::{DriverStatus, VadService};
 pub use routes::{Conflict, Destination, OutputRoute, RoutingTable, Warning};
 pub use state::{AppState, Output, Room, Scan, StreamStatus};

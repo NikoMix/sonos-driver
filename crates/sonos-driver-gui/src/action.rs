@@ -24,6 +24,7 @@ use audio_core::Config;
 use sonos_cast_service::{RouteReport, WorkerEvent};
 use sonos_routing::{Route, RouteConfig};
 
+use crate::driver_status::{DriverStatus, VadService};
 use crate::routes::Destination;
 use crate::state::{AppState, Output, Room, Scan, StreamStatus};
 
@@ -39,6 +40,11 @@ pub enum Action {
     OutputsEnumerated(Vec<Output>),
     /// Endpoint enumeration failed, with a human-readable reason.
     OutputScanFailed(String),
+    /// The Service Control Manager was asked about the `sonosvad` service.
+    ///
+    /// Sent alongside enumeration: together the two say whether the optional
+    /// kernel-driver mode is installed, loaded, and actually streaming.
+    VadServiceProbed(VadService),
     /// Begin background Sonos discovery.
     RefreshRooms,
     /// Discovery completed with the given rooms.
@@ -121,6 +127,7 @@ pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
         Action::RefreshOutputs => refresh_outputs(state),
         Action::OutputsEnumerated(outputs) => {
             state.outputs = Scan::Done;
+            state.driver = DriverStatus::new(&outputs, state.driver.service);
             state.table.sync_outputs(outputs);
             restore_saved(state);
             describe(state);
@@ -129,6 +136,10 @@ pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
         Action::OutputScanFailed(reason) => {
             state.status_line = format!("Could not list the Windows outputs: {reason}");
             state.outputs = Scan::Failed(reason);
+            Vec::new()
+        }
+        Action::VadServiceProbed(service) => {
+            state.driver.service = service;
             Vec::new()
         }
         Action::RefreshRooms => refresh_rooms(state),

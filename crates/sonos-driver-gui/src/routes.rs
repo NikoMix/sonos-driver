@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 
 use sonos_routing::{RoomSelector, RoomsField, Route, RouteConfig, Source};
 
+use crate::driver_status::VadService;
 use crate::state::{Output, Room};
 
 /// The synthetic first row: whatever Windows currently calls the default.
@@ -268,8 +269,12 @@ impl RoutingTable {
     }
 
     /// Things that are legal but probably not what was meant.
+    ///
+    /// `service` is what the `sonosvad` service is doing, which decides whether
+    /// routing one of the driver's own endpoints is a duplicate or merely
+    /// unusual. The table cannot know that by itself, so the caller supplies it.
     #[must_use]
-    pub fn warnings(&self) -> Vec<Warning> {
+    pub fn warnings(&self, service: VadService) -> Vec<Warning> {
         let mut warnings = Vec::new();
         let default_row_routed = self
             .rows
@@ -292,29 +297,37 @@ impl RoutingTable {
             }
         }
 
-        // Routing a sonosvad endpoint means this app captures audio that the
-        // driver's own service is very likely already capturing and sending to
-        // the same household. It is not wrong to do deliberately with the
-        // service stopped, so this informs rather than blocks.
-        let virtual_rows: Vec<usize> = self
-            .routed()
-            .filter(|(_, row)| row.output.is_sonos_virtual())
-            .map(|(index, _)| index)
-            .collect();
-        if !virtual_rows.is_empty() {
-            let names: Vec<&str> = virtual_rows
-                .iter()
-                .map(|&index| self.rows[index].output.name.as_str())
+        // Routing a sonosvad endpoint means this app captures audio the
+        // driver's own service is also streaming to the same household. With
+        // the service confirmed stopped that is a perfectly sensible way to use
+        // the driver's endpoints, so the warning is raised only when the
+        // service might actually be running.
+        if service.may_be_streaming() {
+            let virtual_rows: Vec<usize> = self
+                .routed()
+                .filter(|(_, row)| row.output.is_sonos_virtual())
+                .map(|(index, _)| index)
                 .collect();
-            warnings.push(Warning {
-                rows: virtual_rows,
-                message: format!(
-                    "{} already belong(s) to the sonosvad driver, which streams to Sonos by \
-                     itself. Routing it here as well sends the same audio twice unless the \
-                     sonosvad service is stopped.",
-                    names.join(", ")
-                ),
-            });
+            if !virtual_rows.is_empty() {
+                let names: Vec<&str> = virtual_rows
+                    .iter()
+                    .map(|&index| self.rows[index].output.name.as_str())
+                    .collect();
+                let tail = if service == VadService::Running {
+                    "and the sonosvad service is running, so the same audio is sent twice. Stop \
+                     that service, or clear this row."
+                } else {
+                    "which streams to Sonos by itself. If its service is running, this sends the \
+                     same audio twice."
+                };
+                warnings.push(Warning {
+                    rows: virtual_rows,
+                    message: format!(
+                        "{} belong(s) to the sonosvad driver {tail}",
+                        names.join(", ")
+                    ),
+                });
+            }
         }
 
         warnings
@@ -445,6 +458,7 @@ impl RoutingTable {
 #[cfg(test)]
 mod tests {
     use super::{Destination, RoutingTable, DEFAULT_OUTPUT_ID};
+    use crate::driver_status::VadService;
     use crate::state::{Output, Room};
     use sonos_routing::{RoomSelector, RoomsField, Source};
 
@@ -485,12 +499,12 @@ mod tests {
         // A plain output is unremarkable.
         table.assign(1, to_room(&rooms[0]));
         assert!(
-            table.warnings().is_empty(),
+            table.warnings(VadService::Running).is_empty(),
             "an ordinary output should not warn"
         );
 
         table.assign(2, to_room(&rooms[1]));
-        let warnings = table.warnings();
+        let warnings = table.warnings(VadService::Running);
         assert_eq!(warnings.len(), 1, "the sonosvad row should warn");
         assert_eq!(warnings[0].rows, vec![2]);
         assert!(
@@ -507,7 +521,38 @@ mod tests {
         // Unrouting it clears the warning: the endpoint existing is fine, it is
         // routing it from here that is the surprise.
         table.assign(2, Destination::Off);
-        assert!(table.warnings().is_empty());
+        assert!(table.warnings(VadService::Running).is_empty());
+    }
+
+    #[test]
+    fn a_stopped_sonosvad_service_makes_routing_its_endpoints_unremarkable() {
+        use crate::state::SONOSVAD_ADAPTER;
+
+        // With the service confirmed stopped, its endpoints are inert devices
+        // that only this app is streaming, which is a perfectly good way to use
+        // the driver. Warning anyway would train the user to ignore warnings.
+        let mut table = RoutingTable::new();
+        table.sync_outputs(vec![Output::new(
+            "{0.0.0}.vad1",
+            "Wohnzimmer",
+            SONOSVAD_ADAPTER,
+            false,
+        )]);
+        table.assign(1, to_room(&rooms()[0]));
+
+        assert!(table.warnings(VadService::Stopped).is_empty());
+        assert!(table.warnings(VadService::NotInstalled).is_empty());
+
+        // Not knowing is not the same as knowing it is stopped: an unqueryable
+        // service still warns, because a silent double stream is worse than an
+        // unnecessary sentence.
+        let hedged = table.warnings(VadService::Unknown);
+        assert_eq!(hedged.len(), 1);
+        assert!(
+            hedged[0].message.contains("If its service is running"),
+            "an unknown service should hedge rather than assert: {}",
+            hedged[0].message
+        );
     }
 
     #[test]
@@ -635,7 +680,7 @@ mod tests {
         table.assign(0, to_room(&rooms()[0]));
         table.assign(1, to_room(&rooms()[1]));
         assert!(table.conflicts().is_empty());
-        let warnings = table.warnings();
+        let warnings = table.warnings(VadService::NotInstalled);
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].rows, vec![0, 1]);
     }
