@@ -26,6 +26,7 @@ supersedes the old one (and update the old one's status to "Superseded by ADR-N"
 - [0016 — Default streaming profile is FLAC (Sonos rejects live L16/WAV)](./0016-default-profile-flac.md)
 - [0017 — Kernel virtual-audio driver: a scoped, personal-use revisit of ADR-0014](./0017-kernel-virtual-audio-driver.md)
 - [0018 — Loopback capture, endpoint renaming, and a single service host](./0018-loopback-rename-and-service-hosting.md)
+- [0019 — A driverless routing mode alongside the kernel driver](./0019-driverless-routing-mode.md)
 
 ## Template
 

@@ -30,6 +30,8 @@ sonos-control = { path = "crates/sonos-control", version = "0.2.0" }
 sonos-vad-control = { path = "crates/sonos-vad-control", version = "0.2.0" }
 sonos-vad-endpoint = { path = "crates/sonos-vad-endpoint", version = "0.2.0" }
 sonos-driver-core = { path = "crates/sonos-driver-core", version = "0.2.0" }
+sonos-routing = { path = "crates/sonos-routing", version = "0.2.0" }
+sonos-cast-service = { path = "crates/sonos-cast-service", version = "0.2.0" }
 sonos-vad-service = { path = "crates/sonos-vad-service", version = "0.2.0" }
 
 # Shared third-party dependencies. Versions are intentionally permissive

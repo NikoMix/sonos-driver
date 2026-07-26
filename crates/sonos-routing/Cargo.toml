@@ -1,0 +1,26 @@
+# Route planning for the driverless mode (ADR-0019).
+# Deliberately free of Windows APIs, FFI and I/O so it builds and unit-tests on
+# any platform, mirroring `sonos-vad-control` on the driver side.
+[package]
+name = "sonos-routing"
+description = "Route planning for the driverless mode: pairs audio sources with Sonos rooms and resolves them into deterministic streaming sessions."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+sonos-vad-control.workspace = true
+
+serde = { workspace = true }
+
+[dev-dependencies]
+toml = { workspace = true }
+
+[lints]
+workspace = true

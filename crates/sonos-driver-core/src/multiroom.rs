@@ -196,6 +196,39 @@ pub fn sessions_for_all(
     Ok(sessions)
 }
 
+impl Bridge {
+    /// Run this bridge against `target`, grouping when it names several rooms.
+    ///
+    /// A single capture feeding several players independently drifts audibly,
+    /// so anything past one room is played as a real Sonos group rather than
+    /// fanned out. See [`crate::GroupPlayer`].
+    ///
+    /// Both hosts share this: the driver path reaches it through
+    /// [`MultiRoomBridge::run_sessions`], and the driverless host calls it
+    /// directly after substituting its own capture source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Control`] when a multi-room target cannot reach at
+    /// least two of its rooms, and otherwise propagates whatever ended the
+    /// session.
+    pub fn run_target(
+        &mut self,
+        target: &SessionTarget,
+        seed: Option<&str>,
+        discovery_timeout_secs: u32,
+    ) -> Result<()> {
+        match target {
+            SessionTarget::Room { .. } => self.run(),
+            SessionTarget::AllRooms { uuids } => {
+                let group = crate::group::resolve_group(uuids, seed, discovery_timeout_secs)?;
+                let source = crate::open_capture(&self.config().capture)?;
+                self.run_with(source, Box::new(group))
+            }
+        }
+    }
+}
+
 /// Supervises one [`Bridge`] per bound `sonosvad` endpoint.
 #[derive(Debug)]
 pub struct MultiRoomBridge {
@@ -326,14 +359,7 @@ impl MultiRoomBridge {
                 session.arbiter_id(),
                 session.claimed_rooms(),
             );
-            match &session.target {
-                SessionTarget::Room { .. } => bridge.run(),
-                SessionTarget::AllRooms { uuids } => {
-                    let group = crate::group::resolve_group(uuids, seed.as_deref(), timeout)?;
-                    let source = crate::open_capture(&bridge.config().capture)?;
-                    bridge.run_with(source, Box::new(group))
-                }
-            }
+            bridge.run_target(&session.target, seed.as_deref(), timeout)
         })
     }
 

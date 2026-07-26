@@ -42,6 +42,12 @@ pub(crate) enum Command {
     Stream(StreamArgs),
     /// Stop playback on a Sonos room (sends an `AVTransport` `Stop`).
     Stop(StopArgs),
+    /// Stream to one or more rooms at once, with no driver installed.
+    ///
+    /// The driverless mode (ADR-0019): rooms do not appear in the Windows
+    /// sound picker, but several routes run concurrently and multi-room
+    /// routes are played as one synchronised Sonos group.
+    Cast(CastArgs),
     /// Manage the virtual audio outputs exposed by the `sonosvad` driver.
     #[command(subcommand)]
     Vad(VadCommand),
@@ -291,6 +297,43 @@ pub(crate) struct StopArgs {
     /// Seconds to wait for discovery responses.
     #[arg(long, default_value_t = 3)]
     pub(crate) timeout: u64,
+}
+
+/// Arguments for the `cast` subcommand — the driverless mode.
+///
+/// A bare `sonos-driver cast` runs whatever `cast.toml` holds, which is how you
+/// drive several routes at once. The flags build a single ad-hoc route instead,
+/// so a first run needs no file at all.
+#[derive(Debug, Args)]
+#[command(group(ArgGroup::new("cast_rooms").args(["room", "all"])))]
+pub(crate) struct CastArgs {
+    /// Play in this room. Repeat the flag to play in several rooms at once,
+    /// which are grouped behind the first one named.
+    #[arg(long, value_name = "NAME|UUID")]
+    pub(crate) room: Vec<String>,
+    /// Play in every discovered room, as one group.
+    #[arg(long)]
+    pub(crate) all: bool,
+    /// Capture a single application via WASAPI process loopback: a process
+    /// name (e.g. "spotify.exe") or a numeric PID. Requires Windows 11 /
+    /// Windows Server 2022 (build 20348+).
+    #[arg(long, value_name = "NAME|PID", conflicts_with = "device")]
+    pub(crate) process: Option<String>,
+    /// Invert `--process`: capture everything *except* that application.
+    #[arg(long, value_name = "NAME|PID", conflicts_with_all = ["process", "device"])]
+    pub(crate) except_process: Option<String>,
+    /// Capture this render endpoint instead of the default output device.
+    #[arg(long, value_name = "ID|NAME")]
+    pub(crate) device: Option<String>,
+    /// Address of a known Sonos player, used instead of SSDP multicast.
+    #[arg(long, value_name = "HOST")]
+    pub(crate) seed_host: Option<String>,
+    /// Read routes from this file instead of the default `cast.toml`.
+    #[arg(long, value_name = "PATH")]
+    pub(crate) routes: Option<PathBuf>,
+    /// Resolve and print the plan, then exit without streaming.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
 }
 
 /// The `config` subcommand family.

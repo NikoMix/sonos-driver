@@ -13,7 +13,9 @@ name = "sonos-driver"
 path = "src/main.rs"
 
 [dependencies]
+sonos-cast-service.workspace = true
 sonos-driver-core.workspace = true
+sonos-routing.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 toml.workspace = true

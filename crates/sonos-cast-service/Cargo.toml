@@ -1,0 +1,41 @@
+# The driverless host (ADR-0019). Deliberately independent of every
+# `sonos-vad-*` crate so the driverless path cannot destabilise the driver path.
+[package]
+name = "sonos-cast-service"
+description = "Headless Windows service that streams configured audio sources to Sonos rooms without a virtual audio driver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+name = "sonos_cast_service"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sonos-cast-svc"
+path = "src/main.rs"
+
+[dependencies]
+audio-core.workspace = true
+sonos-driver-core.workspace = true
+sonos-routing.workspace = true
+
+anyhow.workspace = true
+clap.workspace = true
+ctrlc.workspace = true
+serde = { workspace = true }
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-service.workspace = true
+
+[lints]
+workspace = true

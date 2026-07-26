@@ -2738,6 +2738,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "sonos-cast-service"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "audio-core 0.2.0",
+ "clap",
+ "ctrlc",
+ "serde",
+ "sonos-driver-core",
+ "sonos-routing",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "windows-service",
+]
+
+[[package]]
 name = "sonos-control"
 version = "0.2.0"
 dependencies = [
@@ -2758,7 +2775,9 @@ dependencies = [
  "ctrlc",
  "serde",
  "serde_json",
+ "sonos-cast-service",
  "sonos-driver-core",
+ "sonos-routing",
  "toml",
  "tracing",
  "tracing-subscriber",
@@ -2794,6 +2813,15 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tray-icon",
+]
+
+[[package]]
+name = "sonos-routing"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "sonos-vad-control",
+ "toml",
 ]
 
 [[package]]
