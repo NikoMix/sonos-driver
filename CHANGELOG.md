@@ -158,6 +158,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Dependencies brought up to date, including two majors that had to move in
+  pairs.** `rubato` 3 → 4 with `audioadapter-buffers` 3 → 4, and `egui` 0.34 →
+  0.35 with `eframe` 0.34 → 0.35. Each pair is a pair for a reason: bumping one
+  side alone resolves *both* majors into the tree, where the adapter traits and
+  the `egui` types stop being the same types. The workspace manifest now says so
+  next to each pin. Also 62 patch/minor updates, and the pinned SHAs for
+  `cargo-deny-action` (→ v2.1.1) and `actions/upload-artifact` (→ v7.0.1) — the
+  `cargo-deny-action` pin's version comment had drifted and read `v2.0.13` while
+  pointing at v2.0.20, so the comment is now correct as well.
+
+  Two API changes came with them. `rubato` 4 split `Fft::new` into a defaulted
+  form and `new_custom`; the resampler now calls `new_custom` so its deliberate
+  one-sub-chunk, `BlackmanHarris2` configuration stays pinned rather than being
+  re-derived from the chunk size, which keeps the audio path bit-for-bit what it
+  was. `egui` 0.35 renamed `Panel::show_inside` to `show`.
+
 - **The release payload now contains every mode.** The zip and installer bundle
   `sonos-cast-svc.exe` (the driverless service) alongside the CLI and the app, so
   nobody has to install a Rust toolchain to run the service the docs just told

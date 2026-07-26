@@ -55,10 +55,14 @@ serde_json = "1"
 # Audio DSP. `rubato` is the high-quality, real-time-safe resampler; its buffer
 # adapters come from `audioadapter-buffers`. The version floor is pinned to the
 # major `rubato` depends on so Cargo unifies on a single, trait-compatible
-# `audioadapter` graph (rubato 3.x requires the `^3.0` adapters). Both are
+# `audioadapter` graph (rubato 4.x requires the `^4.0` adapters). Both are
 # permissively licensed (MIT / MIT OR Apache-2.0) and cargo-deny validated.
-rubato = "3"
-audioadapter-buffers = "3"
+#
+# These two must move together. Bumping the adapters alone leaves rubato on the
+# previous major and Cargo resolves *both* into the tree, at which point the
+# adapter traits no longer line up.
+rubato = "4"
+audioadapter-buffers = "4"
 
 # Audio codecs. `flacenc` is the pure-Rust FLAC encoder (Apache-2.0); default
 # features (log/par/serde) are disabled so the per-frame streaming path stays
@@ -134,8 +138,12 @@ windows-service = "0.8"
 # Windows system-tray icon and context menu; their Linux-only `gtk`/`libxdo`
 # default features are disabled. `image` decodes the embedded PNG used for the
 # tray and window icons, with only the `png` codec enabled.
-egui = "0.34"
-eframe = { version = "0.34", default-features = false, features = ["default_fonts", "glow"] }
+#
+# `egui` and `eframe` must move together: `eframe` re-exports `egui`, so bumping
+# one alone resolves both majors into the tree and the two `egui` types stop
+# being the same type.
+egui = "0.35"
+eframe = { version = "0.35", default-features = false, features = ["default_fonts", "glow"] }
 tray-icon = { version = "0.24", default-features = false }
 muda = { version = "0.19", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png"] }
