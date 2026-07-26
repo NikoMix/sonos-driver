@@ -107,6 +107,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `--seed-host` never reached the room bridges, so streaming to a named room
+  failed on networks without SSDP multicast.** Both service hosts resolved the
+  seed, used it for discovery, then dropped it: `MultiRoomBridge` clones a
+  template `Config` per room, and a single-room bridge re-resolves its own player
+  from `sonos.seed_host`, which was still unset. The bridge fell back to
+  multicast and died with "no Sonos players responded to SSDP discovery" seconds
+  after discovery had succeeded over unicast against that very seed. Only the
+  aggregate path escaped, because `run_target` forwards the seed for
+  `SessionTarget::AllRooms` but discards it for `SessionTarget::Room` — so
+  `--all` worked while `--room` did not, which disguised a lost setting as a
+  per-room quirk. The seed is now resolved through one shared `apply_seed_host`
+  helper that folds it back into the template, so discovery and streaming cannot
+  disagree about how to reach the household.
+
 - **The driver install scripts could not complete an install or an uninstall.**
   Six defects, found by walking the runbook end to end rather than reading it:
   - `Sign-Driver.ps1` defaulted `-SysPath` to `driver/_local/sonosvad.sys` and
