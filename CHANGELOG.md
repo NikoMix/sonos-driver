@@ -123,12 +123,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The release payload now contains every mode.** The zip and installer bundle
+  `sonos-cast-svc.exe` (the driverless service) alongside the CLI and the app, so
+  nobody has to install a Rust toolchain to run the service the docs just told
+  them to install. `scripts/package.ps1 -IncludeDriver` additionally bundles the
+  signed `sonosvad` driver, `sonosvad-svc.exe`, every install script and an
+  `INSTALL.md` written for the payload's flat layout; the installer then offers
+  the driver as an optional **Full** component. It lays the files down but does
+  **not** install the driver — that needs Secure Boot off and a reboot, which
+  should be a conscious decision rather than a consequence of clicking Next.
+  A missing or unsigned driver fails the packaging run rather than being quietly
+  omitted.
+- `driver/scripts/Test-Driver.ps1` now runs against a release payload with
+  `-ArtifactDir`, without the C++ source tree beside it: the one check that
+  compares the INF against the headers reports SKIP instead of crashing, so a
+  downloaded package can be verified before it is trusted.
 - The desktop binary is now **`sonos-router.exe`** (was `sonos-driver-gui.exe`);
   the crate is still `sonos-driver-gui`. Installer shortcuts and the release
   payload follow the new name.
 - README now presents **three** ways to run the project — the app, the
   driverless CLI/service, and the kernel driver — and leads with the app, since
   it is the one that needs nothing installed.
+- The installer's architecture identifier moved from the deprecated `x64` to
+  `x64os`, which has identical semantics and no longer warns. Deliberately not
+  `x64compatible`, which would admit ARM64 machines emulating x64, where the
+  driver cannot load.
 - **Default streaming profile is now FLAC** (`audio-core`). The bridge previously
   defaulted to raw L16 PCM, which real Sonos players reject ("unable to play
   'stream' — the file is in an unsupported format"); RIFF/WAVE PCM is likewise

@@ -44,9 +44,20 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$driverDir = (Resolve-Path (Join-Path $scriptDir '..\sonosvad')).Path
+
+# The source tree is absent when this script runs from a release payload, where
+# only driver\ (the built package) and driver\scripts\ are present. The checks
+# that compare the INF against the C++ headers are then genuinely impossible, so
+# they SKIP rather than fail: everything that validates the *artifacts* still runs,
+# which is exactly what someone verifying a downloaded package needs.
+$sourceDir = Join-Path $scriptDir '..\sonosvad'
+$driverDir = if (Test-Path $sourceDir) { (Resolve-Path $sourceDir).Path } else { $null }
 
 if (-not $ArtifactDir) {
+    if (-not $driverDir) {
+        throw ("No source tree next to this script and no -ArtifactDir given, so there " +
+               "is nothing to validate. Pass -ArtifactDir <folder containing sonosvad.sys>.")
+    }
     $ArtifactDir = Join-Path $driverDir "artifacts\$Platform\$Configuration"
 }
 if (-not (Test-Path $ArtifactDir)) {
@@ -136,6 +147,10 @@ Invoke-Check 'InfVerif (universal driver rules)' {
 
 # ------------------------------------------------- 3. endpoint count consistency
 Invoke-Check 'INF endpoint count matches SONOSVAD_ENDPOINT_COUNT' {
+    if (-not $driverDir) {
+        throw [System.Management.Automation.ItemNotFoundException] `
+            'no driver source tree next to this script (running from a release payload)'
+    }
     $definitions = Join-Path $driverDir 'Source\Inc\definitions.h'
     $m = Select-String -Path $definitions -Pattern 'define\s+SONOSVAD_ENDPOINT_COUNT\s+\(?(\d+)\)?'
     if (-not $m) { throw 'SONOSVAD_ENDPOINT_COUNT not found in definitions.h' }

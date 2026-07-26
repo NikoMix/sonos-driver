@@ -29,6 +29,11 @@
     Forwarded to package.ps1: reuse already-built release binaries instead of
     rebuilding. The zip is still (re)assembled from those binaries.
 
+.PARAMETER IncludeDriver
+    Forwarded to package.ps1: also bundle the signed sonosvad driver and its install
+    scripts, and offer the kernel-driver mode as an optional component in the wizard.
+    The driver must already be built and signed; see package.ps1's help.
+
 .PARAMETER RequireInstaller
     Fail if the Inno Setup compiler (ISCC.exe) cannot be found. Without this flag
     a missing ISCC is a warning and the script exits 0 (so a developer without
@@ -50,6 +55,7 @@
 param(
     [string] $OutputDir,
     [switch] $SkipBuild,
+    [switch] $IncludeDriver,
     [switch] $RequireInstaller,
     [string] $Iscc
 )
@@ -121,7 +127,8 @@ $zipName = "sonos-driver-$version-$target.zip"
 $zipPath = Join-Path $OutputDir $zipName
 
 $packageArgs = @{ OutputDir = $OutputDir }
-if ($SkipBuild) { $packageArgs['SkipBuild'] = $true }
+if ($SkipBuild)     { $packageArgs['SkipBuild']     = $true }
+if ($IncludeDriver) { $packageArgs['IncludeDriver'] = $true }
 Write-Host 'Assembling portable zip via package.ps1' -ForegroundColor Cyan
 & (Join-Path $scriptDir 'package.ps1') @packageArgs | Out-Null
 if (-not (Test-Path $zipPath)) {

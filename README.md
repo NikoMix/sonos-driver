@@ -541,11 +541,28 @@ zip — no Rust toolchain needed on the target machine:
 pwsh -File scripts/package.ps1
 ```
 
-The zip bundles both binaries (`sonos-driver.exe` and `sonos-router.exe`),
-`README.md`, `CHANGELOG.md`, both licence files, and an example `sonos-driver.toml`. Run
+The zip bundles the three user-mode binaries (`sonos-driver.exe`,
+`sonos-router.exe` and `sonos-cast-svc.exe`), `README.md`, `CHANGELOG.md`, both
+licence files, and an example `sonos-driver.toml`. Run
 `Get-Help scripts/package.ps1 -Detailed` for options (skip the build, change the output
 directory, etc.). The script must run from a shell with the MSVC environment initialised,
 just like a normal build.
+
+To ship the kernel driver too, build and sign it first, then add `-IncludeDriver`:
+
+```powershell
+.\driver\scripts\Build-Driver.ps1
+.\driver\scripts\Sign-Driver.ps1
+pwsh -File scripts/package.ps1 -IncludeDriver
+```
+
+That adds `sonosvad-svc.exe` and a `driver\` folder holding the signed
+`sonosvad.sys`/`.inf`/`.cat`, every install script, and an `INSTALL.md` with the
+exact commands for the payload's flat layout. A missing or unsigned driver is a
+hard error rather than a silent omission, so a release can never claim to
+contain a driver it does not. You can re-verify a downloaded package without the
+source tree: `.\driver\scripts\Test-Driver.ps1 -ArtifactDir .\driver` (the one
+check that compares the INF against the C++ headers reports SKIP).
 
 ### Building the installer
 
@@ -557,7 +574,16 @@ paid licence):
 ```powershell
 # Requires the Inno Setup compiler: choco install innosetup
 pwsh -File scripts/build-installer.ps1
+
+# ...with the driver offered as an optional component
+pwsh -File scripts/build-installer.ps1 -IncludeDriver
 ```
+
+With `-IncludeDriver` the wizard gains a **Full** setup type that lays down the
+driver package. It deliberately does **not** install the driver for you: that
+needs test signing, which needs Secure Boot off and a reboot, and it should be a
+conscious decision rather than a consequence of clicking Next. The installer
+places the files and points at `driver\INSTALL.md`.
 
 If the Inno Setup compiler isn't installed, the script warns and skips the installer (the
 portable zip is unaffected). The release workflow installs it automatically and publishes

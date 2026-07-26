@@ -45,10 +45,10 @@ Then:
 
 ## 3. Cut the release locally (authoritative today)
 
-`scripts/package.ps1` builds **both** release binaries (the CLI and the Sonos Router app) and
-assembles a portable, self-contained zip (both binaries + README + CHANGELOG + both
-licences + a generated example config). It needs no extra crate or `xtask` (see ADR-0010)
-and only built-in PowerShell cmdlets.
+`scripts/package.ps1` builds the release binaries (the CLI, the Sonos Router app and the
+driverless service) and assembles a portable, self-contained zip (those binaries + README
++ CHANGELOG + both licences + a generated example config). It needs no extra crate or
+`xtask` (see ADR-0010) and only built-in PowerShell cmdlets.
 
 From a Developer PowerShell for VS (or after running `vcvars64.bat`):
 
@@ -56,8 +56,26 @@ From a Developer PowerShell for VS (or after running `vcvars64.bat`):
 pwsh -File scripts/package.ps1            # -> dist\sonos-driver-<version>-x86_64-pc-windows-msvc.zip
 ```
 
-The script prints the archive path and size. To package an already-built binary without
+The script prints the archive path and size. To package already-built binaries without
 rebuilding, use `-SkipBuild`; to change the output directory, use `-OutputDir <path>`.
+
+### Include the kernel driver (optional)
+
+The driver is built and signed by `driver/scripts`, not by the packaging script — that
+needs the WDK and a certificate a release machine may not have. Build and sign it first,
+then pass `-IncludeDriver`:
+
+```powershell
+.\driver\scripts\Build-Driver.ps1
+.\driver\scripts\Sign-Driver.ps1
+pwsh -File scripts/package.ps1 -IncludeDriver
+```
+
+The payload then also contains `sonosvad-svc.exe` and a `driver\` folder with the signed
+`.sys`/`.inf`/`.cat`, all install scripts, and a generated `INSTALL.md` giving the exact
+commands for the payload's flat layout (the scripts' defaults assume the repo tree).
+Packaging **fails** if the artifacts are missing or unsigned, so a release can never claim
+to ship a driver it does not.
 
 ### Build the installer (optional)
 
@@ -68,11 +86,20 @@ two artifacts are identical by construction (see ADR-0015):
 ```powershell
 choco install innosetup                  # one-time: installs the ISCC compiler
 pwsh -File scripts/build-installer.ps1   # -> dist\sonos-driver-<version>-x86_64-setup.exe
+
+# ...with the driver offered as an optional "Full" component
+pwsh -File scripts/build-installer.ps1 -IncludeDriver
 ```
 
 If the Inno Setup compiler (`ISCC.exe`) is not found, the script warns and skips the
 installer (the zip is unaffected) unless you pass `-RequireInstaller`. Attach the installer
 to the Release alongside the zip in the Publish step below.
+
+`-IncludeDriver` is forwarded to `package.ps1`, and the `.iss` detects the driver in the
+staged payload at compile time — so the same script produces a core-only or a full
+installer with no separate variant to maintain. The driver component copies files only;
+installing the driver stays a manual, documented step (`driver\INSTALL.md`), because it
+requires Secure Boot off and a reboot.
 
 ### Publish
 
@@ -132,8 +159,11 @@ Consequences and options:
   distributor.
 - **This is *application* (Authenticode) signing only.** It is unrelated to — and must not
   be confused with — the **kernel-driver** signing (EV cert + Partner Center attestation /
-  WHQL) discussed in [ADR-0014](adr/0014-virtual-audio-driver-reality.md). This project
-  ships no kernel driver, so none of that pipeline applies.
+  WHQL) discussed in [ADR-0014](adr/0014-virtual-audio-driver-reality.md). When a release
+  is built with `-IncludeDriver`, the bundled `sonosvad.sys` is **test-signed**: it loads
+  only on a machine with test signing enabled (Secure Boot off), which is why installing it
+  is a deliberate, documented step rather than something the installer does. Production
+  driver signing is tracked separately and is not part of this pipeline.
 
 ## 6. Verify the package
 
@@ -143,10 +173,22 @@ Before announcing, sanity-check the archive on a clean path:
 Expand-Archive dist\sonos-driver-X.Y.Z-x86_64-pc-windows-msvc.zip -DestinationPath $env:TEMP\sd-verify
 $dir = "$env:TEMP\sd-verify\sonos-driver-X.Y.Z-x86_64-pc-windows-msvc"
 & "$dir\sonos-driver.exe" --version        # CLI prints the version
-Start-Process "$dir\sonos-router.exe"  # app opens and shows its tray icon — then close it
+& "$dir\sonos-cast-svc.exe" --help         # service binary responds
+Start-Process "$dir\sonos-router.exe"      # app opens and shows its tray icon — then close it
 ```
 
-Confirm the CLI version matches the tag and that both binaries, the README, CHANGELOG, both
-`LICENSE-*` files, and `sonos-driver.toml` are present in the extracted folder. If you built
-the installer, run it on a throwaway path/VM and confirm it installs both binaries and
-creates the Start-menu shortcut.
+Confirm the CLI version matches the tag and that all three binaries, the README, CHANGELOG,
+both `LICENSE-*` files, and `sonos-driver.toml` are present in the extracted folder. If you
+built the installer, run it on a throwaway path/VM and confirm it installs them and creates
+the Start-menu shortcut.
+
+For a `-IncludeDriver` release, also verify the driver package from the extracted payload —
+this works without the C++ source tree, so it validates exactly what a user receives:
+
+```powershell
+& "$dir\driver\scripts\Test-Driver.ps1" -ArtifactDir "$dir\driver"
+```
+
+Expect every artifact check to PASS and exactly one SKIP (the INF-versus-headers check,
+which needs the source tree). A FAIL here means the payload is not installable — do not
+publish it.
