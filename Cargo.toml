@@ -89,7 +89,7 @@ bytes = "1"
 # discovery out only the default-route adapter and find no rooms). It adds no new
 # transitive crates (libc/windows-sys are already present) and is MIT/BSD-3.
 socket2 = "0.6"
-quick-xml = { version = "0.40", features = ["serialize"] }
+quick-xml = { version = "0.41", features = ["serialize"] }
 if-addrs = "0.15"
 
 # Windows API bindings for WASAPI loopback capture (WS-A, `audio-capture` only).
