@@ -46,7 +46,7 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
           targets: x86_64-pc-windows-msvc
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.8.1
       - name: rustfmt
         run: cargo fmt --all --check
       - name: clippy (warnings are errors)
@@ -98,7 +98,7 @@ jobs:
           toolchain: stable
           targets: x86_64-pc-windows-msvc
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.8.1
 
       - name: Install Inno Setup (installer compiler)
         run: choco install innosetup -y --no-progress
